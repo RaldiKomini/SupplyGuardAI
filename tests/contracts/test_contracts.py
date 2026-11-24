@@ -13,6 +13,8 @@ from supplyguard.contracts import (
     ContractModel,
     CoveragePosition,
     InventoryPosition,
+    LatePenaltyCostInput,
+    OpenPurchaseOrder,
     RecoveryAction,
     RecoveryActionType,
     SourceReference,
@@ -118,3 +120,30 @@ def test_operational_contracts_explain_location_coverage_and_calculations() -> N
 
     assert coverage.days_of_cover == Decimal("4.0")
     assert trace.result == 3200
+
+
+def test_open_purchase_order_preserves_expedite_terms() -> None:
+    purchase_order = OpenPurchaseOrder(
+        po_id="PO-2026-9002",
+        supplier_id="S004",
+        component_id="MC-17",
+        quantity=1500,
+        unit_price_eur=Decimal("9.8"),
+        promised_date=date(2026, 11, 2),
+        status="open",
+        expedite_allowed=True,
+        expedite_fee_percentage=Decimal("6"),
+        expedite_days_gain=7,
+    )
+
+    assert purchase_order.expedite_fee_percentage == Decimal("6")
+
+
+def test_late_penalty_input_uses_percentage_points() -> None:
+    cost_input = LatePenaltyCostInput(
+        revenue_eur=Decimal("1000"),
+        delay_days=8,
+        weekly_rate_percentage=Decimal("2"),
+    )
+
+    assert cost_input.cap_weeks == 5
