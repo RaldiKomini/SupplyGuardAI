@@ -1,6 +1,6 @@
 # Roles, scopes, and users. Passwords are never stored here; each user names the
 # environment variable that holds their password.
-# Everything below must match support-data/config/users.csv exactly; a test enforces it.
+# Base users match support-data/config/users.csv. The demo Finance Director is an app extension.
 
 [roles.viewer]
 scopes = ["public"]
@@ -15,6 +15,9 @@ scopes = ["public", "internal", "procurement"]
 scopes = ["public", "internal", "procurement"]
 
 [roles.finance_controller]
+scopes = ["public", "internal", "procurement", "finance-confidential"]
+
+[roles.finance_director]
 scopes = ["public", "internal", "procurement", "finance-confidential"]
 
 [[users]]
@@ -44,6 +47,13 @@ display_name = "Paul Novak"
 role = "finance_controller"
 factory_ids = ["F1", "F2", "F3"]
 password_env = "AUTH_PASSWORD_U_FC_01"
+
+[[users]]
+id = "u-fd-01"
+display_name = "Demo Finance Director"
+role = "finance_director"
+factory_ids = ["F1", "F2", "F3"]
+password_env = "AUTH_PASSWORD_U_FD_01"
 
 [[users]]
 id = "u-ro-01"
