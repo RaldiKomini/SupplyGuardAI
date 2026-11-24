@@ -9,10 +9,16 @@ from supplyguard.contracts import (
     ImpactReport,
     InventoryPosition,
     OpenPurchaseOrder,
+    SourceReference,
     SupplierCapability,
 )
 
 SCENARIO_DATE = date(2026, 10, 19)
+
+
+def _source(file: str, record: str) -> tuple[SourceReference, ...]:
+    return (SourceReference(source_id=file, source_type="structured", record_id=record),)
+
 
 INCIDENT = ConfirmedIncident(
     case_id="CASE-GOLD",
@@ -44,6 +50,7 @@ def _coverage(location: str, factory: str | None, usable: int, cover: str) -> Co
         usable_units=usable,
         daily_demand_units=Decimal("150") if factory else Decimal("450"),
         days_of_cover=Decimal(cover),
+        sources=_source("inventory.csv", location),
     )
 
 
@@ -66,6 +73,7 @@ def _supplier(
         certification_status=certification,
         erp_status="approved",
         upstream_manufacturer_id=upstream,
+        sources=_source("supplier_components.csv", f"{supplier_id}|MC-17"),
     )
 
 
@@ -104,6 +112,7 @@ IMPACT = ImpactReport(
             expedite_allowed=False,
             expedite_fee_percentage=Decimal("0"),
             expedite_days_gain=0,
+            sources=_source("purchase_orders.csv", "PO-2026-9001"),
         ),
         OpenPurchaseOrder(
             po_id="PO-2026-9002",
@@ -116,6 +125,7 @@ IMPACT = ImpactReport(
             expedite_allowed=True,
             expedite_fee_percentage=Decimal("6"),
             expedite_days_gain=7,
+            sources=_source("purchase_orders.csv", "PO-2026-9002"),
         ),
     ),
     coverage=(
