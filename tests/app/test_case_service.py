@@ -27,10 +27,19 @@ PASSWORDS = {user.password_env: f"pw-{user.id}" for user in load_access_config(C
 
 
 class InMemoryWorkflow:
-    """Stores cases without any ownership check, so the boundary is what must enforce it."""
+    """Stores cases without ownership checks, except `submit_approval`, which follows the contract.
 
-    def __init__(self, cases: dict[str, CaseSummary] | None = None) -> None:
+    The contract lets the case owner or an authorized approver submit a decision, so the
+    approver test fails if the boundary forwards a decision the workflow would reject.
+    """
+
+    def __init__(
+        self,
+        cases: dict[str, CaseSummary] | None = None,
+        requests: dict[str, ApprovalRequest] | None = None,
+    ) -> None:
         self.cases: dict[str, CaseSummary] = cases or {}
+        self.requests: dict[str, ApprovalRequest] = requests or {}
         self.calls: list[str] = []
 
     async def list_cases(self, authorization: AuthorizationContext) -> Sequence[CaseSummary]:
@@ -59,6 +68,17 @@ class InMemoryWorkflow:
         self, decision: ApprovalDecision, authorization: AuthorizationContext
     ) -> AsyncIterator[UIEvent]:
         self.calls.append("submit_approval")
+        case = self.cases.get(decision.case_id)
+        request = self.requests.get(decision.approval_request_id)
+        is_owner = case is not None and case.user_id == authorization.user_id
+        is_approver = (
+            request is not None
+            and request.case_id == decision.case_id
+            and request.payload_hash == decision.payload_hash
+            and authorization.role in request.required_approver_roles
+        )
+        if not (is_owner or is_approver):
+            raise PermissionError(decision.case_id)
         yield _event(decision.case_id, "approval recorded")
 
 
@@ -137,6 +157,14 @@ def _collect(stream: AsyncIterator[UIEvent]) -> list[UIEvent]:
 
 def _owned_by(case_id: str, user_id: str) -> InMemoryWorkflow:
     return InMemoryWorkflow({case_id: _case(case_id, user_id)})
+
+
+def _pending_approval_service() -> tuple[InMemoryWorkflow, CaseService]:
+    request = _approval_request()
+    workflow = InMemoryWorkflow(
+        {"C-1": _case("C-1", "u-pm-01")}, {request.approval_request_id: request}
+    )
+    return workflow, CaseService(workflow, InMemoryApprovals(request))
 
 
 def test_user_lists_only_own_cases() -> None:
@@ -234,8 +262,7 @@ def test_approval_must_name_the_authenticated_user() -> None:
 
 
 def test_second_approver_submits_own_approval_and_unrelated_user_is_denied() -> None:
-    workflow = _owned_by("C-1", "u-pm-01")
-    service = CaseService(workflow, InMemoryApprovals(_approval_request()))
+    workflow, service = _pending_approval_service()
 
     events = _collect(
         asyncio.run(service.submit_approval(_decision("C-1", "u-fc-01"), _context("u-fc-01")))
@@ -248,8 +275,7 @@ def test_second_approver_submits_own_approval_and_unrelated_user_is_denied() -> 
 
 
 def test_second_approver_reads_the_approval_request_but_not_the_case() -> None:
-    workflow = _owned_by("C-1", "u-pm-01")
-    service = CaseService(workflow, InMemoryApprovals(_approval_request()))
+    _, service = _pending_approval_service()
     approver = _context("u-fc-01")
 
     request = asyncio.run(service.get_approval_request("AR-1", approver))
@@ -265,8 +291,7 @@ def test_second_approver_reads_the_approval_request_but_not_the_case() -> None:
 
 
 def test_approval_must_match_the_request_it_answers() -> None:
-    workflow = _owned_by("C-1", "u-pm-01")
-    service = CaseService(workflow, InMemoryApprovals(_approval_request()))
+    workflow, service = _pending_approval_service()
     changed = _decision("C-1", "u-fc-01").model_copy(update={"payload_hash": "hash-2"})
 
     with pytest.raises(RequestRejectedError):
@@ -276,8 +301,7 @@ def test_approval_must_match_the_request_it_answers() -> None:
 
 
 def test_approver_cannot_submit_a_decision_naming_another_user_or_role() -> None:
-    workflow = _owned_by("C-1", "u-pm-01")
-    service = CaseService(workflow, InMemoryApprovals(_approval_request()))
+    workflow, service = _pending_approval_service()
     forged = _decision("C-1", "u-pm-01").model_copy(
         update={
             "approver_user_ids": ("u-pm-01", "u-fc-01"),
