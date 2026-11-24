@@ -5,7 +5,8 @@ Steps for each document in support-data/documents/:
      access_scope, supplier_id, status ...);
   2. decide whether it is superseded (front matter says so, or a newer version of
      the same supplier's contract exists);
-  3. scan for prompt injection and keep only the sanitized text;
+  3. scan the body AND the free-text metadata (title) for prompt injection, check that
+     identifier fields look like identifiers, and keep only the sanitized values;
   4. split into chunks and put a provenance header at the top of EVERY chunk,
      so a claim is never separated from its source.
 
@@ -21,6 +22,15 @@ from datetime import date
 from pathlib import Path
 
 from supplyguard.guardrails.injection import scan_and_sanitize
+from supplyguard.guardrails.metadata import (
+    DOCUMENT_FREE_TEXT,
+    DOCUMENT_IDENTIFIERS,
+    MEMORY_FREE_TEXT,
+    MEMORY_IDENTIFIERS,
+    SAFE_IDENTIFIER,
+    clean_metadata,
+    safe_version,
+)
 from supplyguard.retrieval.models import Citation, ContentFinding, DocumentChunk
 
 MAX_CHUNK_CHARS = 1500
@@ -109,19 +119,31 @@ def _provenance_header(c: Citation) -> str:
     )
 
 
+def _finding_source_id(doc: dict) -> str:
+    """The ID we report findings under. If source_id itself is not a valid identifier we
+    use the file name, so attack text never ends up in a finding."""
+    sid = str(doc["meta"].get("source_id", ""))
+    return sid if SAFE_IDENTIFIER.match(sid) else f"file:{Path(doc.get('path', 'unknown')).stem}"
+
+
 def chunk_document(doc: dict) -> tuple[list[DocumentChunk], list[ContentFinding]]:
-    m = doc["meta"]
+    source_id = _finding_source_id(doc)
+    # Metadata is untrusted too: the title and IDs are shown to the model in every chunk.
+    m, findings = clean_metadata(doc["meta"], source_id, DOCUMENT_FREE_TEXT, DOCUMENT_IDENTIFIERS)
+    if not m.get("source_id"):
+        return [], findings  # no valid source_id -> we cannot cite it, so we do not index it
     citation = Citation(
         source_id=m["source_id"],
-        doc_type=m.get("doc_type", "unknown"),
+        doc_type=m.get("doc_type") or "unknown",
         title=m.get("title", ""),
-        version=int(m.get("version") or 1),
+        version=safe_version(m.get("version") or 1),
         effective_date=_to_date(m.get("effective_date", "")),
         access_scope=m.get("access_scope", ""),  # empty scope -> nobody can retrieve it
         supplier_id=m.get("supplier_id", ""),
-        status=m.get("status", "current"),
+        status=m.get("status") or "current",
     )
-    clean_body, findings = scan_and_sanitize(doc["body"], citation.source_id)
+    clean_body, body_findings = scan_and_sanitize(doc["body"], citation.source_id)
+    findings += body_findings
     flags = sorted({f.category for f in findings})
     chunks = []
     for i, piece in enumerate(_split_body(clean_body)):
@@ -147,34 +169,48 @@ def ingest_documents(documents_dir: str | Path) -> tuple[list[DocumentChunk], li
     return all_chunks, all_findings
 
 
-def memory_to_chunk(record: dict) -> DocumentChunk:
-    """Turn one approved incident memory into a chunk for the separate memory collection.
+def memory_to_chunk_with_findings(record: dict) -> tuple[DocumentChunk, list[ContentFinding]]:
+    """Turn one approved incident memory into a chunk for the separate memory collection,
+    plus the guardrail findings for it.
 
     Used both for the 40 supplied memories and for new ones Elena's workflow
-    stores after a case is approved and closed."""
-    memory_id = record["memory_id"]
+    stores after a case is approved and closed. Every free-text field is scanned and
+    every identifier is checked, exactly like document metadata."""
+    raw_id = str(record.get("memory_id", ""))
+    if not SAFE_IDENTIFIER.match(raw_id):
+        raise ValueError("memory_id must be a plain identifier")
+    r, findings = clean_metadata(record, raw_id, MEMORY_FREE_TEXT, MEMORY_IDENTIFIERS)
+    memory_id = r["memory_id"]
     citation = Citation(
         source_id=memory_id,
         doc_type="approved_incident_memory",
-        title=f"Approved resolution {record.get('case_id', '')} - {record.get('component_id', '')}",
-        version=int(record.get("version", 1)),
-        effective_date=_to_date(record.get("approved_on", "")),
-        access_scope=record.get("access_scope", "internal"),
-        supplier_id=record.get("supplier_id", ""),
+        title=f"Approved resolution {r.get('case_id', '')} - {r.get('component_id', '')}",
+        version=safe_version(r.get("version", 1)),
+        effective_date=_to_date(r.get("approved_on", "")),
+        # missing -> 'internal' (the default in the data); invalid -> '' (nobody can retrieve it)
+        access_scope=r.get("access_scope", "internal"),
+        supplier_id=r.get("supplier_id", ""),
         chunk_id=f"{memory_id}#c0",
     )
-    clean, findings = scan_and_sanitize(record.get("approved_summary", ""), memory_id)
+    clean, summary_findings = scan_and_sanitize(r.get("approved_summary", ""), memory_id)
+    findings += summary_findings
     text = (
-        f"[{memory_id} | approved_incident_memory | case {record.get('case_id', '')} | "
-        f"component {record.get('component_id', '')} | supplier {record.get('supplier_id', '')}]\n"
-        f"Strategy: {record.get('strategy', '')}. {clean}"
+        f"[{memory_id} | approved_incident_memory | case {r.get('case_id', '')} | "
+        f"component {r.get('component_id', '')} | supplier {r.get('supplier_id', '')}]\n"
+        f"Strategy: {r.get('strategy', '')}. {clean}"
     )
-    return DocumentChunk(
+    chunk = DocumentChunk(
         chunk_id=citation.chunk_id,
         text=text,
         citation=citation,
         security_flags=sorted({f.category for f in findings}),
     )
+    return chunk, findings
+
+
+def memory_to_chunk(record: dict) -> DocumentChunk:
+    """Same as memory_to_chunk_with_findings, without the findings."""
+    return memory_to_chunk_with_findings(record)[0]
 
 
 def load_incident_memories(jsonl_path: str | Path) -> list[DocumentChunk]:
