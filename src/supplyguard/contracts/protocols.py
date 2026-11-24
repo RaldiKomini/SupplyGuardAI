@@ -17,6 +17,7 @@ from supplyguard.contracts.planning import (
     ApprovalDecision,
     ApprovalRequest,
     ExecutionResult,
+    RecoveryAction,
     RecoveryPlan,
 )
 
@@ -78,8 +79,12 @@ class ApprovalService(Protocol):
         self, request: ApprovalRequest, decision: ApprovalDecision
     ) -> ApprovalDecision: ...
 
+    async def revalidate(
+        self, request: ApprovalRequest, modified_actions: tuple[RecoveryAction, ...]
+    ) -> ApprovalRequest: ...
+
 
 class ProcurementExecutionService(Protocol):
     async def execute(
         self, request: ApprovalRequest, decision: ApprovalDecision
-    ) -> ExecutionResult: ...
+    ) -> tuple[ExecutionResult, ...]: ...
