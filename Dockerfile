@@ -9,7 +9,7 @@ COPY pyproject.toml uv.lock README.md ./
 COPY src ./src
 RUN uv sync --frozen --no-dev
 
-RUN useradd --system --create-home appuser
+RUN useradd --system --create-home appuser && chown appuser /app
 USER appuser
 
 ENV PATH="/app/.venv/bin:$PATH"
