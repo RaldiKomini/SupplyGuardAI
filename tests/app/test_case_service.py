@@ -3,6 +3,7 @@
 import asyncio
 from collections.abc import AsyncIterator, Sequence
 from datetime import UTC, datetime
+from decimal import Decimal
 from pathlib import Path
 
 import pytest
@@ -17,7 +18,7 @@ from supplyguard.contracts import (
     UIEvent,
     UIEventType,
 )
-from supplyguard.contracts.planning import ApprovalDecision
+from supplyguard.contracts.planning import ApprovalDecision, ApprovalRequest
 
 ROOT = Path(__file__).resolve().parents[2]
 CONFIG_PATH = ROOT / "config" / "access.toml"
@@ -89,9 +90,32 @@ def _decision(case_id: str, approver: str) -> ApprovalDecision:
         payload_hash="hash-1",
         approved=True,
         approver_user_ids=(approver,),
-        approver_roles=("procurement_manager",),
+        approver_roles=(_context(approver).role,),
         decided_at=NOW,
     )
+
+
+def _approval_request(case_id: str = "C-1") -> ApprovalRequest:
+    return ApprovalRequest(
+        approval_request_id="AR-1",
+        case_id=case_id,
+        option_id="OPT-1",
+        payload_version=1,
+        payload_hash="hash-1",
+        actions=(),
+        total_cost_eur=Decimal("30378"),
+        required_approver_roles=("procurement_manager", "finance_controller"),
+        evidence_source_ids=("DOC-1",),
+        requested_at=NOW,
+    )
+
+
+class InMemoryApprovals:
+    def __init__(self, *requests: ApprovalRequest) -> None:
+        self.requests = {request.approval_request_id: request for request in requests}
+
+    async def get_request(self, approval_request_id: str) -> ApprovalRequest | None:
+        return self.requests.get(approval_request_id)
 
 
 def _registry(environ: dict[str, str] | None = None) -> AccessRegistry:
@@ -205,6 +229,64 @@ def test_approval_must_name_the_authenticated_user() -> None:
 
     with pytest.raises(RequestRejectedError):
         asyncio.run(service.submit_approval(_decision("C-1", "u-fc-01"), _context("u-pm-01")))
+
+    assert workflow.calls == []
+
+
+def test_second_approver_submits_own_approval_and_unrelated_user_is_denied() -> None:
+    workflow = _owned_by("C-1", "u-pm-01")
+    service = CaseService(workflow, InMemoryApprovals(_approval_request()))
+
+    events = _collect(
+        asyncio.run(service.submit_approval(_decision("C-1", "u-fc-01"), _context("u-fc-01")))
+    )
+
+    assert [event.message for event in events] == ["approval recorded"]
+    with pytest.raises(CaseNotFoundError):
+        asyncio.run(service.submit_approval(_decision("C-1", "u-an-01"), _context("u-an-01")))
+    assert workflow.calls == ["submit_approval"]
+
+
+def test_second_approver_reads_the_approval_request_but_not_the_case() -> None:
+    workflow = _owned_by("C-1", "u-pm-01")
+    service = CaseService(workflow, InMemoryApprovals(_approval_request()))
+    approver = _context("u-fc-01")
+
+    request = asyncio.run(service.get_approval_request("AR-1", approver))
+
+    assert request.payload_hash == "hash-1"
+    assert asyncio.run(service.list_cases(approver)) == ()
+    with pytest.raises(CaseNotFoundError):
+        asyncio.run(service.resume_case("C-1", approver))
+    with pytest.raises(CaseNotFoundError):
+        asyncio.run(service.send_message("C-1", "hello", approver))
+    with pytest.raises(CaseNotFoundError):
+        asyncio.run(service.get_approval_request("AR-1", _context("u-an-01")))
+
+
+def test_approval_must_match_the_request_it_answers() -> None:
+    workflow = _owned_by("C-1", "u-pm-01")
+    service = CaseService(workflow, InMemoryApprovals(_approval_request()))
+    changed = _decision("C-1", "u-fc-01").model_copy(update={"payload_hash": "hash-2"})
+
+    with pytest.raises(RequestRejectedError):
+        asyncio.run(service.submit_approval(changed, _context("u-fc-01")))
+
+    assert workflow.calls == []
+
+
+def test_approver_cannot_submit_a_decision_naming_another_user_or_role() -> None:
+    workflow = _owned_by("C-1", "u-pm-01")
+    service = CaseService(workflow, InMemoryApprovals(_approval_request()))
+    forged = _decision("C-1", "u-pm-01").model_copy(
+        update={
+            "approver_user_ids": ("u-pm-01", "u-fc-01"),
+            "approver_roles": ("procurement_manager", "finance_controller"),
+        }
+    )
+
+    with pytest.raises(RequestRejectedError):
+        asyncio.run(service.submit_approval(forged, _context("u-pm-01")))
 
     assert workflow.calls == []
 

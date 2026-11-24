@@ -3,12 +3,17 @@
 Every workflow call passes through `CaseService`, which checks case ownership before
 the workflow reads or changes case state. The service holds no state, so a restart
 rebuilds it from the same workflow and the same configuration.
+
+Case access is owner-only. The one exception is an approval request: a user whose role is
+listed in the request's `required_approver_roles` may read that request and submit their own
+decision on it, and nothing else about the case.
 """
 
 from collections.abc import AsyncIterator
+from typing import Protocol
 
 from supplyguard.contracts import AuthorizationContext, CaseSummary, IncidentInput, UIEvent
-from supplyguard.contracts.planning import ApprovalDecision
+from supplyguard.contracts.planning import ApprovalDecision, ApprovalRequest
 from supplyguard.contracts.protocols import CaseWorkflowService
 
 
@@ -20,9 +25,17 @@ class RequestRejectedError(ValueError):
     """Raised when a request does not match the authenticated user."""
 
 
+class ApprovalRequestSource(Protocol):
+    async def get_request(self, approval_request_id: str) -> ApprovalRequest | None: ...
+
+
 class CaseService:
-    def __init__(self, workflow: CaseWorkflowService) -> None:
+    def __init__(
+        self, workflow: CaseWorkflowService, approvals: ApprovalRequestSource | None = None
+    ) -> None:
         self._workflow = workflow
+        # Without a source, only case owners can approve: the second-approver path stays closed.
+        self._approvals = approvals
 
     async def list_cases(self, authorization: AuthorizationContext) -> tuple[CaseSummary, ...]:
         # Filtering here protects users even if a workflow implementation returns extra cases.
@@ -56,12 +69,47 @@ class CaseService:
     async def submit_approval(
         self, decision: ApprovalDecision, authorization: AuthorizationContext
     ) -> AsyncIterator[UIEvent]:
-        await self._require_owned(decision.case_id, authorization)
-        if authorization.user_id not in decision.approver_user_ids:
-            raise RequestRejectedError("approval must name the authenticated user as an approver")
+        # Each approver submits only their own decision, so one user cannot supply another's.
+        if decision.approver_user_ids != (authorization.user_id,) or decision.approver_roles != (
+            authorization.role,
+        ):
+            raise RequestRejectedError("approval must name only the authenticated user and role")
+        request = await self._find_request(decision.approval_request_id)
+        owns_case = await self._owns(decision.case_id, authorization)
+        designated = (
+            request is not None
+            and request.case_id == decision.case_id
+            and authorization.role in request.required_approver_roles
+        )
+        if not (owns_case or designated):
+            raise CaseNotFoundError(decision.case_id)
+        if self._approvals is not None and (
+            request is None
+            or request.case_id != decision.case_id
+            or request.payload_hash != decision.payload_hash
+        ):
+            raise RequestRejectedError("decision does not match the approval request")
         return self._workflow.submit_approval(decision, authorization)
 
+    async def get_approval_request(
+        self, approval_request_id: str, authorization: AuthorizationContext
+    ) -> ApprovalRequest:
+        request = await self._find_request(approval_request_id)
+        if request is None or not (
+            authorization.role in request.required_approver_roles
+            or await self._owns(request.case_id, authorization)
+        ):
+            raise CaseNotFoundError(approval_request_id)
+        return request
+
+    async def _find_request(self, approval_request_id: str) -> ApprovalRequest | None:
+        if self._approvals is None:
+            return None
+        return await self._approvals.get_request(approval_request_id)
+
+    async def _owns(self, case_id: str, authorization: AuthorizationContext) -> bool:
+        return case_id in {case.case_id for case in await self.list_cases(authorization)}
+
     async def _require_owned(self, case_id: str, authorization: AuthorizationContext) -> None:
-        owned_ids = {case.case_id for case in await self.list_cases(authorization)}
-        if case_id not in owned_ids:
+        if not await self._owns(case_id, authorization):
             raise CaseNotFoundError(case_id)
