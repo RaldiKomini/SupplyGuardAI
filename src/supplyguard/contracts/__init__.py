@@ -37,6 +37,7 @@ from supplyguard.contracts.memory import ResolutionMemory
 from supplyguard.contracts.planning import (
     ApprovalDecision,
     ApprovalRequest,
+    ChallengeFinding,
     ExecutionResult,
     ExecutionStatus,
     RecoveryAction,
@@ -53,6 +54,7 @@ __all__ = [
     "CalculationTrace",
     "CaseStatus",
     "CaseSummary",
+    "ChallengeFinding",
     "ComponentCandidate",
     "ConfirmedIncident",
     "ContractModel",
