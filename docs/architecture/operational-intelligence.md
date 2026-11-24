@@ -50,6 +50,14 @@ Business formulas live in `supplyguard.calculations`; they have no database, net
 
 Open purchase orders for the disrupted component are returned in `ImpactReport`, including expedite eligibility, percentage fee, and days gained. Recovery planning calls `DeterministicCostService` through the shared `OperationalCostService` protocol. CSV percentage values are percentage points: `6` means `6%`, so PO-2026-9002 has a base value of `1,500 × €9.80 = €14,700` and an expedite fee of `€14,700 × 6 / 100 = €882`.
 
+For a proposed strategy, call `estimate_purchase(PurchaseCostInput(...))` with the
+selected supplier price and `estimate_transfer(TransferCostInput(...))` with
+`transfer_cost_eur_per_unit` from `support-data/config/policies.json`. Pass the price
+or policy source with each input. Both methods multiply the proposed quantity by the
+rate and round the total to cents. For MC-17, 3,000 Cordillera units at €9.80 cost
+€29,400 and moving 800 hub units at €0.12 costs €96. With the €882 expedite fee,
+these actions total €30,378. The planner still checks capacity, stock and approvals.
+
 The MC-17 golden scenario verifies:
 
 - usable stock = `5,200 - 1,400 - 600 = 3,200` units;
