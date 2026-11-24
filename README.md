@@ -112,3 +112,5 @@ See [COLLABORATION.md](COLLABORATION.md), [SECURITY.md](SECURITY.md), and [the s
 Raldi's component now includes idempotent PostgreSQL loading, deterministic impact calculations, a provenance-aware Neo4j projection, and a cached external-risk MCP client/server. Its service implements the shared `OperationalIntelligenceService` boundary; it measures impact but does not select or execute a recovery plan.
 
 Setup, formulas, failure behaviour, and integration instructions are in [the operational-intelligence guide](docs/architecture/operational-intelligence.md). The main decisions are recorded in [ADR 0002](docs/decisions/0002-operational-data-authority.md) and [ADR 0003](docs/decisions/0003-postgres-and-neo4j-boundary.md).
+
+The component's measurable value hypothesis, KPIs, targets, and attribution limits are documented in [the operational-intelligence business-value assessment](docs/business-value/operational-intelligence.md).
