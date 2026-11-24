@@ -33,7 +33,7 @@ from pathlib import Path
 
 from supplyguard.contracts import AuthorizationContext, ConfirmedIncident, EvidenceBundle
 from supplyguard.guardrails.access import enforce_scope, scopes_from
-from supplyguard.guardrails.injection import detect_injection
+from supplyguard.guardrails.injection import detect_injection, findings_from_flags
 from supplyguard.retrieval.conflicts import extract_facts, resolve
 from supplyguard.retrieval.contract_mapping import (
     to_evidence_conflict,
@@ -43,8 +43,8 @@ from supplyguard.retrieval.contract_mapping import (
 from supplyguard.retrieval.hybrid import Retriever
 from supplyguard.retrieval.ingestion import (
     ingest_documents,
-    load_incident_memories,
-    memory_to_chunk,
+    load_incident_memories_with_findings,
+    memory_to_chunk_with_findings,
 )
 from supplyguard.retrieval.lexical import BM25Index
 from supplyguard.retrieval.models import (
@@ -94,7 +94,11 @@ class EvidenceService:
         self.memory_store = memory_store
         self.scenario_date = scenario_date
         self.retriever = Retriever(vector_store=document_store, lexical=BM25Index(chunks))
-        self._memory_chunks: list[DocumentChunk] = []
+        # Keyword index of the memory collection. It starts with every memory already in the
+        # store, so memories saved before a restart are found by BOTH searches (keyword and
+        # vector), not only by the vector one.
+        self._memory_chunks: list[DocumentChunk] = list(memory_store.all_chunks())
+        self._memory_findings: list[ContentFinding] = []
         self._chunk_by_source = {c.citation.source_id: c for c in chunks}
 
     # ------------------------------------------------------------------ setup
@@ -105,22 +109,31 @@ class EvidenceService:
         backend: str = "memory",
         index: bool = True,
         embeddings=None,
+        stores: tuple | None = None,
     ) -> EvidenceService:
         """Load documents from disk. With index=True the chunks are (re)written to the
-        vector store; use index=False when scripts/index_documents.py already did that."""
+        vector store; use index=False when scripts/index_documents.py already did that.
+        `stores` = (document_store, memory_store) to reuse already-open stores (tests use it
+        to restart the service on the same in-memory "database")."""
         root = Path(support_data_dir)
         embeddings = embeddings or get_embeddings()
         chunks, findings = ingest_documents(root / "documents")
-        doc_store = make_vector_store(backend, embeddings, "documents")
-        mem_store = make_vector_store(backend, embeddings, "memories")
+        if stores is not None:
+            doc_store, mem_store = stores
+        else:
+            doc_store = make_vector_store(backend, embeddings, "documents")
+            mem_store = make_vector_store(backend, embeddings, "memories")
         scenario = DEFAULT_SCENARIO_DATE
         policies = root / "config" / "policies.json"
         if policies.exists():
             scenario = date.fromisoformat(json.loads(policies.read_text())["scenario_date"])
         service = cls(chunks, findings, doc_store, mem_store, scenario_date=scenario)
         memories_file = root / "structured" / "approved_incident_memories.jsonl"
-        memories = load_incident_memories(memories_file) if memories_file.exists() else []
-        service._memory_chunks = memories
+        memories, memory_findings = [], []
+        if memories_file.exists():
+            memories, memory_findings = load_incident_memories_with_findings(memories_file)
+        service._add_memory_chunks(memories)
+        service._memory_findings = memory_findings
         if index:
             doc_store.add(chunks)
             if memories:
@@ -190,7 +203,9 @@ class EvidenceService:
     def search_incident_memories_bundle(self, case_id: str, query: str, authorization, k=5):
         scopes = scopes_from(authorization)
         result = self.search_incident_memories(query, scopes, k=k)
-        return self._to_bundle(case_id, query, result.evidence, [], [], scopes)
+        return self._to_bundle(
+            case_id, query, result.evidence, [], [], scopes, findings=result.security_findings
+        )
 
     # ============================================================ internal API
     def search(
@@ -255,7 +270,10 @@ class EvidenceService:
         return tuple(sorted(found))
 
     def search_incident_memories(self, query: str, auth_context, k: int = 5) -> RetrievalResult:
-        """Semantic + keyword search in the SEPARATE approved-incident-memory collection."""
+        """Semantic + keyword search in the SEPARATE approved-incident-memory collection.
+
+        Like document search, the result lists guardrail findings for every returned
+        memory (memories are written from case data, so they are untrusted too)."""
         scopes = scopes_from(auth_context)
         retriever = Retriever(
             vector_store=self.memory_store,
@@ -263,7 +281,20 @@ class EvidenceService:
             use_authority=False,
             name="memory-hybrid",
         )
-        return retriever.retrieve(query, scopes, k=k)
+        result = retriever.retrieve(query, scopes, k=k)
+        returned = {e.citation.source_id for e in result.evidence}
+        findings = [f for f in self._memory_findings if f.source_id in returned]
+        # After a restart, memories saved earlier come back from the vector store, but their
+        # detailed findings were only in memory. Rebuild them from the flags stored with
+        # the chunk, so a finding is never lost.
+        known = {f.source_id for f in self._memory_findings}
+        for e in result.evidence:
+            if e.citation.source_id not in known and e.chunk.security_flags:
+                findings += findings_from_flags(e.citation.source_id, e.chunk.security_flags)
+        result.security_findings = findings
+        if result.security_findings:
+            result.notes.append("Embedded instructions were found and removed; they were ignored.")
+        return result
 
     def index_approved_memory(self, record: dict) -> DocumentChunk:
         """Called when Elena's workflow closes an approved case. Required keys:
@@ -272,10 +303,12 @@ class EvidenceService:
         missing = {"memory_id", "case_id", "approved_summary"} - record.keys()
         if missing:
             raise ValueError(f"memory record is missing {sorted(missing)}")
-        chunk = memory_to_chunk(record)
+        chunk, findings = memory_to_chunk_with_findings(record)
         self.memory_store.add([chunk])
-        others = [c for c in self._memory_chunks if c.chunk_id != chunk.chunk_id]
-        self._memory_chunks = [*others, chunk]
+        self._add_memory_chunks([chunk])
+        # Re-indexing the same memory replaces its old findings.
+        mid = chunk.citation.source_id
+        self._memory_findings = [f for f in self._memory_findings if f.source_id != mid] + findings
         return chunk
 
     def scan_untrusted_text(self, text: str, source_id: str = "user_attachment"):
@@ -284,12 +317,19 @@ class EvidenceService:
         return tuple(to_security_finding(f, None) for f in detect_injection(text, source_id))
 
     # ============================================================ private helpers
+    def _add_memory_chunks(self, chunks: list[DocumentChunk]) -> None:
+        """Add or replace memories in the keyword index (one entry per chunk_id)."""
+        new_ids = {c.chunk_id for c in chunks}
+        self._memory_chunks = [c for c in self._memory_chunks if c.chunk_id not in new_ids] + chunks
+
     def _findings_for(self, source_ids: set[str]) -> list[ContentFinding]:
         return [f for f in self.ingestion_findings if f.source_id in source_ids]
 
-    def _to_bundle(self, case_id, query, evidence, cited_chunks, conflicts, scopes):
+    def _to_bundle(self, case_id, query, evidence, cited_chunks, conflicts, scopes, findings=None):
         """Build the shared EvidenceBundle. Relevance scores are rescaled to 0..1 by
-        dividing by the best score of this query (the contract requires 0..1)."""
+        dividing by the best score of this query (the contract requires 0..1).
+        `findings`: internal findings to report; by default the document findings for
+        the sources in the bundle."""
         now = datetime.now(UTC)
         best = max((e.score for e in evidence), default=0.0) or 1.0
         items, seen = [], set()
@@ -307,9 +347,14 @@ class EvidenceService:
         sources = {i.source.source_id for i in items}
 
         unique_conflicts = {(c.supplier_id, c.fact_name): c for c in conflicts}.values()
+        if findings is None:
+            findings = self._findings_for(sources)
+        citations = {e.chunk.citation.source_id: e.chunk.citation for e in evidence}
+        citations |= {c.citation.source_id: c.citation for c in cited_chunks}
         findings = [
-            to_security_finding(f, self._chunk_by_source[f.source_id].citation)
-            for f in self._findings_for(sources)
+            to_security_finding(f, citations.get(f.source_id))
+            for f in findings
+            if f.source_id in sources
         ]
         return EvidenceBundle(
             case_id=case_id,

@@ -32,3 +32,7 @@ class VectorStore(Protocol):
 
     def count(self) -> int:
         """Number of stored chunks."""
+
+    def all_chunks(self) -> list[DocumentChunk]:
+        """Every stored chunk (no scope filter: used at startup to rebuild the keyword
+        index; search() still applies the scope filter to every result)."""

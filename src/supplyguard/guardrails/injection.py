@@ -163,3 +163,26 @@ def scan_and_sanitize(text: str, source_id: str) -> tuple[str, list[ContentFindi
     """Convenience: findings are computed on the ORIGINAL text, sanitized text is what we keep."""
     findings = detect_injection(text, source_id)
     return (sanitize(text) if findings else text), findings
+
+
+# Severity of categories that are not regex patterns.
+OTHER_SEVERITIES = {"hidden_content": "medium", "invalid_metadata": "high"}
+RESTORED_SNIPPET = "(restored from the stored security flags)"
+
+
+def findings_from_flags(source_id: str, flags: list[str]) -> list[ContentFinding]:
+    """Rebuild findings from the category names stored with a chunk (`security_flags`).
+
+    Used after a restart: the vector store keeps the sanitized text AND these flags, but
+    the detailed findings were only in memory. The attack text itself is never stored,
+    so the restored findings carry the category and severity, not the original snippet."""
+    severities = {cat: sev for cat, (sev, _) in PATTERNS.items()} | OTHER_SEVERITIES
+    return [
+        ContentFinding(
+            source_id=source_id,
+            category=flag,
+            severity=severities.get(flag, "high"),
+            snippet=RESTORED_SNIPPET,
+        )
+        for flag in sorted(set(flags))
+    ]

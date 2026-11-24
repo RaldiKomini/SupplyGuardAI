@@ -72,3 +72,10 @@ class ChromaStore:
 
     def count(self) -> int:
         return self.collection.count()
+
+    def all_chunks(self) -> list[DocumentChunk]:
+        stored = self.collection.get(include=["documents", "metadatas"])
+        return [
+            DocumentChunk.from_metadata(text, meta)
+            for text, meta in zip(stored["documents"], stored["metadatas"], strict=True)
+        ]
