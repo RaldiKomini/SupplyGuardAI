@@ -109,6 +109,30 @@ Mapping rules (`contract_mapping.py`):
 
 For a prompt, use `format_evidence_for_prompt(...)` from `guardrails/untrusted.py`.
 
+### Workflow protocols (`retrieval/adapters.py`)
+
+```python
+from supplyguard.retrieval.adapters import (
+    EvidenceResolutionMemoryStore,  # implements contracts.protocols.ResolutionMemoryStore
+    GuardrailContentSafetyService,  # implements contracts.protocols.ContentSafetyService
+)
+
+safety = GuardrailContentSafetyService()
+findings = safety.scan(user_message, "user_message")  # -> tuple[SecurityFinding, ...]
+
+memories = EvidenceResolutionMemoryStore(service)
+await memories.save(resolution_memory)  # guardrails run before indexing
+similar = await memories.search("MC-17 delay", authorization, limit=3)  # -> ResolutionMemory
+```
+
+- `scan()` uses the same detector as ingestion. A negated safety rule in the user's own text
+  ("Do not create a purchase order without approval") is not flagged.
+- `save()` scans `strategy` and `approved_summary`, validates the IDs, and writes to the
+  separate memory collection. `search()` returns only memories within the user's scopes,
+  with the sanitized text that was indexed. Memories come back from the stored chunk text,
+  so they are found again after a restart. The `sources` of a saved memory are not stored.
+- Memory searches also report guardrail findings (`search_incident_memories`, `..._bundle`).
+
 ## 4. Design decisions (and why)
 
 **Provenance header on every chunk.** Each chunk starts with
@@ -173,6 +197,15 @@ uv run python scripts/index_documents.py --backend all      # DATABASE_URL + CHR
 uv run python scripts/benchmark_retrieval.py                # writes docs/evidence/retrieval_benchmark.md
 uv run python scripts/benchmark_retrieval.py --offline      # in-memory stand-ins
 uv run python -m supplyguard.guardrails.red_team support-data docs/evidence/red_team_findings.md
+```
+
+Check the deployed pgvector and ChromaDB services with the supplied documents (indexes
+them, then checks scopes inside the database, injection flagging at the workflow boundary,
+and the memory store):
+
+```powershell
+docker compose --env-file .env up -d --wait postgres chroma
+$env:RUN_INTEGRATION="1"; uv run pytest tests/integration/test_evidence_stores.py -v
 ```
 
 `support-data/` is not committed (COLLABORATION.md). Put your copy at the repository root or
