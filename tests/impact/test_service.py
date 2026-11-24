@@ -10,6 +10,7 @@ from supplyguard.repositories.operational import (
     CapabilityRow,
     FactoryDemandRow,
     InventoryRow,
+    OpenPurchaseOrderRow,
     OrderRow,
 )
 
@@ -36,6 +37,22 @@ class FakeRepository:
         return (
             CapabilityRow(
                 "SUP-2", component_id, 5, 3000, 100, Decimal("12.50"), "valid", "active", "UP-1"
+            ),
+        )
+
+    async def open_purchase_orders(self, component_id):
+        return (
+            OpenPurchaseOrderRow(
+                "PO-2026-9002",
+                "S004",
+                component_id,
+                1500,
+                Decimal("9.8"),
+                date(2026, 11, 2),
+                "open",
+                True,
+                Decimal("6"),
+                7,
             ),
         )
 
@@ -86,6 +103,8 @@ async def test_investigation_builds_traceable_golden_result() -> None:
     assert result.impact.projected_shortfall_units == 5350
     assert result.impact.revenue_at_risk_eur == Decimal("2500")
     assert result.impact.calculations[0].inputs["delay_days"] == 12
+    assert result.impact.open_purchase_orders[0].po_id == "PO-2026-9002"
+    assert result.impact.calculations[1].result == Decimal("882.00")
     assert result.dependencies.disconnected_entity_ids == ("P-99",)
     assert result.warnings == ()
 

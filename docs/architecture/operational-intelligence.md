@@ -48,6 +48,8 @@ The loaders read but never modify the supplied files. Missing primary IDs and in
 
 Business formulas live in `supplyguard.calculations`; they have no database, network, or model dependency. Important results include their formula, typed inputs, result, unit, and sources.
 
+Open purchase orders for the disrupted component are returned in `ImpactReport`, including expedite eligibility, percentage fee, and days gained. Recovery planning calls `DeterministicCostService` through the shared `OperationalCostService` protocol. CSV percentage values are percentage points: `6` means `6%`, so PO-2026-9002 has a base value of `1,500 × €9.80 = €14,700` and an expedite fee of `€14,700 × 6 / 100 = €882`.
+
 The MC-17 golden scenario verifies:
 
 - usable stock = `5,200 - 1,400 - 600 = 3,200` units;
