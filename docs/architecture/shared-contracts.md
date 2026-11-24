@@ -6,14 +6,27 @@ Cross-component communication uses immutable Pydantic models from `src/supplygua
 
 ```text
 IncidentInput
+  -> (SupplierCandidate / ComponentCandidate when the wording is ambiguous)
   -> ConfirmedIncident
   -> OperationalIntelligenceResult
   -> EvidenceBundle
   -> RecoveryPlan
-  -> ApprovalRequest / ApprovalDecision
+  -> ApprovalRequest / ApprovalDecision (approve, reject, or modify -> revalidated new request)
   -> ExecutionResult
+  -> ResolutionMemory
   -> UIEvent / EvaluationResult
 ```
+
+## Protocols added for the workflow
+
+| Protocol | Implemented by | Called by |
+|---|---|---|
+| `MasterDataService` | Raldi | workflow intake (resolving "Atlas" to candidates) |
+| `ContentSafetyService` | George | workflow intake (user message), retrieval |
+| `ResolutionMemoryStore` | George | workflow (save after execution, search for similar cases) |
+
+`ApprovalDecision.modified_actions` carries the approver's changed actions; the workflow passes
+them to the approval service for revalidation and a new approval request.
 
 ## Rules
 
@@ -26,6 +39,9 @@ IncidentInput
 - Important numbers include a `CalculationTrace` with formula, inputs, result, unit, and sources.
 - Open purchase orders expose expedite eligibility, percentage, and time gain through `OpenPurchaseOrder`.
 - Recovery planning calls `OperationalCostService`; it does not import calculation internals.
+- For purchase estimates, pass the proposed quantity, selected unit price and its sources in
+  `PurchaseCostInput`. For transfers, pass the proposed quantity and trusted policy rate with
+  its source in `TransferCostInput`. Both methods return a euro-denominated calculation trace.
 - External-risk evidence identifies the relevant upstream manufacturer and alert date.
 - Warnings use `DataQualityWarning` or `SecurityFinding` rather than free-form logging only.
 - Approval includes a stable hash of the exact canonical action payload.

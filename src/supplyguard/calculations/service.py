@@ -3,11 +3,38 @@
 from decimal import ROUND_CEILING, Decimal
 
 from supplyguard.calculations.impact import estimate_late_penalty, expedite_cost
-from supplyguard.contracts import CalculationTrace, LatePenaltyCostInput, OpenPurchaseOrder
+from supplyguard.contracts import (
+    CalculationTrace,
+    LatePenaltyCostInput,
+    OpenPurchaseOrder,
+    PurchaseCostInput,
+    TransferCostInput,
+)
 
 
 class DeterministicCostService:
     """Implements the shared cost protocol without database or model dependencies."""
+
+    def estimate_purchase(self, cost_input: PurchaseCostInput) -> CalculationTrace:
+        return CalculationTrace(
+            calculation="purchase_cost",
+            formula="quantity * unit_price_eur",
+            inputs={"quantity": cost_input.quantity, "unit_price_eur": cost_input.unit_price_eur},
+            result=(cost_input.quantity * cost_input.unit_price_eur).quantize(Decimal("0.01")),
+            unit="EUR",
+            sources=cost_input.sources,
+        )
+
+    def estimate_transfer(self, cost_input: TransferCostInput) -> CalculationTrace:
+        rate = cost_input.transfer_cost_eur_per_unit
+        return CalculationTrace(
+            calculation="transfer_cost",
+            formula="quantity * transfer_cost_eur_per_unit",
+            inputs={"quantity": cost_input.quantity, "transfer_cost_eur_per_unit": rate},
+            result=(cost_input.quantity * rate).quantize(Decimal("0.01")),
+            unit="EUR",
+            sources=cost_input.sources,
+        )
 
     def estimate_expedite(self, purchase_order: OpenPurchaseOrder) -> CalculationTrace:
         if not purchase_order.expedite_allowed:

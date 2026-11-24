@@ -1,10 +1,64 @@
+import json
 from datetime import date
 from decimal import Decimal
+from pathlib import Path
 
 import pytest
 
 from supplyguard.calculations import DeterministicCostService
-from supplyguard.contracts import LatePenaltyCostInput, OpenPurchaseOrder
+from supplyguard.contracts import (
+    LatePenaltyCostInput,
+    OpenPurchaseOrder,
+    PurchaseCostInput,
+    SourceReference,
+    TransferCostInput,
+)
+from supplyguard.contracts.protocols import OperationalCostService
+
+
+def test_mc17_purchase_and_transfer_costs() -> None:
+    costs: OperationalCostService = DeterministicCostService()
+    purchase_source = SourceReference(
+        source_id="supplier_components.csv", source_type="csv", record_id="S004|MC-17"
+    )
+    policy_source = SourceReference(
+        source_id="support-data/config/policies.json",
+        source_type="policy",
+        record_id="transfer_cost_eur_per_unit",
+    )
+    policy_path = Path(__file__).resolve().parents[2] / policy_source.source_id
+    policy = json.loads(policy_path.read_text(encoding="utf-8"), parse_float=Decimal)
+
+    purchase = costs.estimate_purchase(
+        PurchaseCostInput(quantity=3000, unit_price_eur=Decimal("9.80"), sources=(purchase_source,))
+    )
+    transfer = costs.estimate_transfer(
+        TransferCostInput(
+            quantity=800,
+            transfer_cost_eur_per_unit=policy["transfer_cost_eur_per_unit"],
+            sources=(policy_source,),
+        )
+    )
+
+    assert purchase.result == Decimal("29400.00")
+    assert purchase.sources == (purchase_source,)
+    assert transfer.result == Decimal("96.00")
+    assert transfer.sources == (policy_source,)
+    assert transfer.inputs == {"quantity": 800, "transfer_cost_eur_per_unit": Decimal("0.12")}
+    assert purchase.unit == transfer.unit == "EUR"
+
+
+def test_purchase_rounds_total_to_cents_and_zero_transfer_costs_nothing() -> None:
+    costs = DeterministicCostService()
+    purchase = costs.estimate_purchase(
+        PurchaseCostInput(quantity=3, unit_price_eur=Decimal("0.1234"))
+    )
+    transfer = costs.estimate_transfer(
+        TransferCostInput(quantity=0, transfer_cost_eur_per_unit=Decimal("0.12"))
+    )
+
+    assert purchase.result == Decimal("0.37")
+    assert transfer.result == Decimal("0.00")
 
 
 def test_po_2026_9002_expedite_cost_is_882_eur() -> None:
