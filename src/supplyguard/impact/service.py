@@ -3,7 +3,12 @@
 import asyncio
 from decimal import Decimal
 
-from supplyguard.calculations import days_of_cover, projected_shortfall, projected_stockout_date
+from supplyguard.calculations import (
+    DeterministicCostService,
+    days_of_cover,
+    projected_shortfall,
+    projected_stockout_date,
+)
 from supplyguard.contracts import (
     AtRiskOrder,
     CalculationTrace,
@@ -14,11 +19,13 @@ from supplyguard.contracts import (
     DependencyReport,
     ImpactReport,
     InventoryPosition,
+    OpenPurchaseOrder,
     OperationalIntelligenceResult,
     Severity,
     SourceReference,
     SupplierCapability,
 )
+from supplyguard.contracts.protocols import OperationalCostService
 from supplyguard.external_risk.service import ExternalRiskService
 from supplyguard.graph.client import DependencyContext, DependencyGraph
 from supplyguard.repositories.operational import OperationalRepository
@@ -36,10 +43,12 @@ class DefaultOperationalIntelligenceService:
         repository: OperationalRepository,
         graph: DependencyGraph,
         external_risk: ExternalRiskService,
+        cost_service: OperationalCostService | None = None,
     ) -> None:
         self.repository = repository
         self.graph = graph
         self.external_risk = external_risk
+        self.cost_service = cost_service or DeterministicCostService()
 
     async def investigate(self, incident: ConfirmedIncident) -> OperationalIntelligenceResult:
         # Graph I/O is independent; overlap it with sequential queries on one DB connection.
@@ -57,6 +66,7 @@ class DefaultOperationalIntelligenceService:
             )
             orders = await self.repository.open_orders(product_ids)
             capabilities = await self.repository.supplier_capabilities(incident.component_id)
+            purchase_orders = await self.repository.open_purchase_orders(incident.component_id)
             data_warnings = await self.repository.quality_warnings(
                 (incident.supplier_id, incident.component_id, *product_ids)
             )
@@ -160,6 +170,27 @@ class DefaultOperationalIntelligenceService:
             )
             for row in capabilities
         )
+        open_purchase_orders = tuple(
+            OpenPurchaseOrder(
+                po_id=row.po_id,
+                supplier_id=row.supplier_id,
+                component_id=row.component_id,
+                quantity=row.quantity,
+                unit_price_eur=row.unit_price_eur,
+                promised_date=row.promised_date,
+                status=row.status,
+                expedite_allowed=row.expedite_allowed,
+                expedite_fee_percentage=row.expedite_fee_percentage,
+                expedite_days_gain=row.expedite_days_gain,
+                sources=(csv_source("purchase_orders.csv", row.po_id),),
+            )
+            for row in purchase_orders
+        )
+        expedite_calculations = tuple(
+            self.cost_service.estimate_expedite(purchase_order)
+            for purchase_order in open_purchase_orders
+            if purchase_order.expedite_allowed
+        )
         calculations = (
             CalculationTrace(
                 calculation="projected_shortfall",
@@ -178,6 +209,7 @@ class DefaultOperationalIntelligenceService:
                     csv_source("purchase_orders.csv", incident.component_id),
                 ),
             ),
+            *expedite_calculations,
         )
         impact = ImpactReport(
             case_id=incident.case_id,
@@ -194,6 +226,7 @@ class DefaultOperationalIntelligenceService:
             at_risk_orders=at_risk_orders,
             revenue_at_risk_eur=sum((row.revenue_eur for row in orders), start=Decimal(0)),
             supplier_capabilities=supplier_capabilities,
+            open_purchase_orders=open_purchase_orders,
             coverage=coverage,
             calculations=calculations,
             warnings=tuple(warnings),
