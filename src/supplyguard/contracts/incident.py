@@ -2,10 +2,45 @@
 
 from datetime import date
 from decimal import Decimal
+from enum import StrEnum
 
 from pydantic import Field
 
 from supplyguard.contracts.common import ContractModel
+
+
+class DisruptionType(StrEnum):
+    DELAY = "delay"
+    QUALITY_HOLD = "quality_hold"
+    CAPACITY_SHORTAGE = "capacity_shortage"
+    LOGISTICS = "logistics"
+    OTHER = "other"
+
+
+class Urgency(StrEnum):
+    LOW = "low"
+    MEDIUM = "medium"
+    HIGH = "high"
+    CRITICAL = "critical"
+
+
+class SpendingCapSource(StrEnum):
+    MESSAGE = "message"
+    POLICY_DEFAULT = "policy_default"
+
+
+class SupplierCandidate(ContractModel):
+    """A supplier the user may mean, offered in a clarification question."""
+
+    supplier_id: str = Field(min_length=1)
+    name: str = Field(min_length=1)
+
+
+class ComponentCandidate(ContractModel):
+    """A component the user may mean, offered in a clarification question."""
+
+    component_id: str = Field(min_length=1)
+    description: str = Field(min_length=1)
 
 
 class IncidentInput(ContractModel):
@@ -27,3 +62,9 @@ class ConfirmedIncident(ContractModel):
     scenario_date: date
     spending_cap_eur: Decimal = Field(ge=0)
     original_message: str = Field(min_length=1)
+    supplier_name: str | None = None
+    component_description: str | None = None
+    disruption_type: DisruptionType = DisruptionType.DELAY
+    urgency: Urgency = Urgency.MEDIUM
+    spending_cap_source: SpendingCapSource = SpendingCapSource.MESSAGE
+    purchase_order_requires_approval: bool = True

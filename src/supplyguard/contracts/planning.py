@@ -43,14 +43,14 @@ class RecoveryOption(ContractModel):
 class RecoveryPlan(ContractModel):
     case_id: str
     options: tuple[RecoveryOption, ...]
-    recommended_option_id: str
+    recommended_option_id: str | None  # None when no option is feasible
     recommendation_reason: str
     residual_risks: tuple[str, ...] = ()
 
     @model_validator(mode="after")
     def recommended_option_exists(self) -> "RecoveryPlan":
         option_ids = {option.option_id for option in self.options}
-        if self.recommended_option_id not in option_ids:
+        if self.recommended_option_id is not None and self.recommended_option_id not in option_ids:
             raise ValueError("recommended_option_id must reference one of the options")
         return self
 
@@ -76,12 +76,25 @@ class ApprovalDecision(ContractModel):
     approver_user_ids: tuple[str, ...]
     decided_at: AwareDatetime
     reason: str | None = None
+    # A modification: not approved, with the changed actions (e.g. a new quantity).
+    # They are revalidated and need a new approval request.
+    modified_actions: tuple[RecoveryAction, ...] = ()
 
     @model_validator(mode="after")
     def approved_decision_has_approver(self) -> "ApprovalDecision":
         if self.approved and not self.approver_user_ids:
             raise ValueError("an approved decision requires at least one approver")
         return self
+
+    @model_validator(mode="after")
+    def modification_is_not_an_approval(self) -> "ApprovalDecision":
+        if self.approved and self.modified_actions:
+            raise ValueError("an approval cannot modify actions; changes need a new approval")
+        return self
+
+    @property
+    def is_modification(self) -> bool:
+        return not self.approved and bool(self.modified_actions)
 
 
 class ExecutionStatus(StrEnum):
