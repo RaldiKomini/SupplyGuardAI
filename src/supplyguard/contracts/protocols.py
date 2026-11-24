@@ -11,6 +11,8 @@ from supplyguard.contracts.impact import (
     LatePenaltyCostInput,
     OpenPurchaseOrder,
     OperationalIntelligenceResult,
+    PurchaseCostInput,
+    TransferCostInput,
 )
 from supplyguard.contracts.incident import ConfirmedIncident, IncidentInput
 from supplyguard.contracts.planning import (
@@ -52,6 +54,10 @@ class OperationalIntelligenceService(Protocol):
 
 
 class OperationalCostService(Protocol):
+    def estimate_purchase(self, cost_input: PurchaseCostInput) -> CalculationTrace: ...
+
+    def estimate_transfer(self, cost_input: TransferCostInput) -> CalculationTrace: ...
+
     def estimate_expedite(self, purchase_order: OpenPurchaseOrder) -> CalculationTrace: ...
 
     def estimate_late_penalty(self, cost_input: LatePenaltyCostInput) -> CalculationTrace: ...

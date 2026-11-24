@@ -21,8 +21,10 @@ from supplyguard.contracts.impact import (
     LatePenaltyCostInput,
     OpenPurchaseOrder,
     OperationalIntelligenceResult,
+    PurchaseCostInput,
     RiskEvidence,
     SupplierCapability,
+    TransferCostInput,
 )
 from supplyguard.contracts.incident import ConfirmedIncident, IncidentInput
 from supplyguard.contracts.planning import (
@@ -65,6 +67,7 @@ __all__ = [
     "LatePenaltyCostInput",
     "OpenPurchaseOrder",
     "OperationalIntelligenceResult",
+    "PurchaseCostInput",
     "RecoveryAction",
     "RecoveryActionType",
     "RecoveryOption",
@@ -74,6 +77,7 @@ __all__ = [
     "Severity",
     "SourceReference",
     "SupplierCapability",
+    "TransferCostInput",
     "UIEvent",
     "UIEventType",
 ]
