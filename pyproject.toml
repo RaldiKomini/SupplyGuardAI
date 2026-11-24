@@ -9,14 +9,27 @@ description = "Agentic supply-chain disruption investigation and recovery platfo
 readme = "README.md"
 requires-python = ">=3.13,<3.14"
 dependencies = [
+  "alembic>=1.20.1",
+  "asyncpg>=0.32.0",
+  "httpx>=0.28.1",
+  "mcp>=2.3.0",
+  "neo4j>=6.4.1",
   "pydantic>=2.10,<3",
+  "sqlalchemy[asyncio]>=2.1.9",
 ]
+
+[project.scripts]
+supplyguard-load-data = "supplyguard.data.cli:main"
+supplyguard-load-graph = "supplyguard.graph.cli:main"
+supplyguard-risk-mcp = "supplyguard.external_risk.mcp_server:main"
 
 [dependency-groups]
 dev = [
   "pytest>=8.3,<9",
+  "pytest-asyncio>=0.25,<2",
   "pytest-cov>=6,<7",
   "ruff>=0.11,<1",
+  "testcontainers>=4.15.0",
 ]
 
 [tool.hatch.build.targets.wheel]
@@ -25,6 +38,7 @@ packages = ["src/supplyguard"]
 [tool.pytest.ini_options]
 addopts = "-ra"
 testpaths = ["tests"]
+markers = ["integration: requires local Docker and RUN_INTEGRATION=1"]
 
 [tool.ruff]
 line-length = 100
