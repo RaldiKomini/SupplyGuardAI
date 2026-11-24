@@ -29,6 +29,7 @@ from supplyguard.guardrails.metadata import (
     MEMORY_IDENTIFIERS,
     SAFE_IDENTIFIER,
     clean_metadata,
+    is_valid_version,
     safe_version,
 )
 from supplyguard.retrieval.models import Citation, ContentFinding, DocumentChunk
@@ -69,25 +70,38 @@ def load_documents(documents_dir: str | Path) -> list[dict]:
     return docs
 
 
+def _version_stamp(meta: dict) -> tuple[date, int]:
+    """(effective date, version) used to find the latest contract. Never raises:
+    a missing date counts as the oldest date, an invalid version as version 1."""
+    return (_to_date(meta.get("effective_date")) or date.min, safe_version(meta.get("version", 1)))
+
+
 def mark_superseded(docs: list[dict]) -> None:
     """A document is superseded if its front matter says so, or if another document of
     the same type for the same supplier has a higher version and a later effective date
-    (DOC-PRO-02: 'a later effective_date supersedes an earlier version')."""
+    (DOC-PRO-02: 'a later effective_date supersedes an earlier version').
+
+    A contract whose version is not a valid number (e.g. 'draft') cannot be the latest
+    version in force: it never supersedes another contract and is itself marked superseded.
+    This runs BEFORE the metadata guardrail, so it must never raise on bad metadata."""
     latest: dict[tuple, tuple] = {}
     for d in docs:
         m = d["meta"]
-        if m.get("doc_type") == "contract" and m.get("supplier_id"):
+        valid_version = is_valid_version(m.get("version", 1))
+        if m.get("doc_type") == "contract" and m.get("supplier_id") and valid_version:
             key = ("contract", m["supplier_id"])
-            stamp = (_to_date(m.get("effective_date")) or date.min, int(m.get("version", 1)))
+            stamp = _version_stamp(m)
             latest[key] = max(latest.get(key, stamp), stamp)
     for d in docs:
         m = d["meta"]
-        status = m.get("status", "").lower()
+        status = str(m.get("status", "")).lower()
         key = (m.get("doc_type"), m.get("supplier_id"))
-        if key in latest:
-            stamp = (_to_date(m.get("effective_date")) or date.min, int(m.get("version", 1)))
-            if stamp < latest[key]:
-                status = "superseded"
+        invalid_contract = m.get("doc_type") == "contract" and not is_valid_version(
+            m.get("version", 1)
+        )
+        older_than_latest = key in latest and _version_stamp(m) < latest[key]
+        if invalid_contract or older_than_latest:
+            status = "superseded"
         m["status"] = "superseded" if status == "superseded" else "current"
 
 

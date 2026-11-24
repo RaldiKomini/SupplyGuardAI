@@ -10,6 +10,9 @@ model. Two simple rules:
    look like identifiers: letters, digits, '-', '_' or '.', at most 64 characters.
    Anything else is not a valid ID, so it is replaced and reported. For access_scope
    this means "no scope", so the document fails closed: nobody can retrieve it.
+3. The version must be a positive whole number. Anything else (e.g. "draft") is reported
+   and read as version 1. A contract with an invalid version can never supersede another
+   contract, and is never treated as the version in force (see ingestion.mark_superseded).
 """
 
 from __future__ import annotations
@@ -41,6 +44,18 @@ def clean_metadata(
             cleaned[field] = safe_value
             findings += field_findings
 
+    if "version" in cleaned and not is_valid_version(cleaned["version"]):
+        findings.append(
+            ContentFinding(
+                source_id=source_id,
+                category="invalid_metadata",
+                severity="medium",
+                snippet=f"version: {str(cleaned['version'])[:60]}",
+                action_taken="invalid 'version' read as 1",
+            )
+        )
+        cleaned["version"] = 1
+
     for field in identifiers:
         value = str(cleaned.get(field) or "").strip()
         if value and not SAFE_IDENTIFIER.match(value):
@@ -55,6 +70,12 @@ def clean_metadata(
                 )
             )
     return cleaned, findings
+
+
+def is_valid_version(value) -> bool:
+    """True for 1, 2, 3 ... or "1", "2", "3" ... and False for anything else."""
+    text = str(value).strip()
+    return text.isdigit() and int(text) >= 1
 
 
 def safe_version(value) -> int:

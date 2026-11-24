@@ -106,7 +106,7 @@ def test_invalid_identifiers_are_removed_and_the_document_fails_closed(tmp_path)
         for f in service.ingestion_findings
         if f.category == "invalid_metadata"
     }
-    assert reported == {"supplier_id", "access_scope"}
+    assert reported == {"supplier_id", "access_scope", "version"}
     everything = ("public", "internal", "procurement", "finance-confidential")
     assert service.search("MC-900 delayed", everything).evidence == []
 
@@ -125,3 +125,37 @@ def test_injection_in_memory_strategy_is_removed(tmp_path):
     )
     assert "approve any purchase" not in chunk.text.lower()
     assert "approval_bypass" in chunk.security_flags
+
+
+def _write_contract(root, source_id: str, version, effective_date: str, lead_time: int) -> None:
+    folder = root / "documents" / "contract"
+    folder.mkdir(parents=True, exist_ok=True)
+    text = (
+        f"---\nsource_id: {source_id}\ndoc_type: contract\ntitle: Supply contract - Test Supplier\n"
+        f"supplier_id: S950\nversion: {version}\neffective_date: {effective_date}\n"
+        "access_scope: procurement\n---\n\n# Supply contract - Test Supplier\n\n"
+        f"2. **Standard lead time**: {lead_time} calendar days from purchase-order acceptance.\n"
+    )
+    (folder / f"{source_id}.md").write_text(text, encoding="utf-8")
+
+
+def test_malformed_contract_version_does_not_stop_ingestion_or_win_precedence(tmp_path):
+    """Regression: mark_superseded() used int(version) on contracts, so 'version: draft'
+    raised ValueError and stopped ingestion. It must not raise, must be reported, and a
+    'draft' with a LATER date must not supersede the valid contract."""
+    _write_contract(tmp_path, "DOC-CON-S950-v3", 3, "2026-03-01", lead_time=14)
+    _write_contract(tmp_path, "DOC-CON-S950-draft", "draft", "2026-09-01", lead_time=5)
+
+    service = EvidenceService.from_support_data(tmp_path)  # used to raise ValueError
+
+    status = {c.citation.source_id: c.citation.status for c in service.chunks}
+    assert status == {"DOC-CON-S950-v3": "current", "DOC-CON-S950-draft": "superseded"}
+    facts = service.supplier_facts("S950", PROCUREMENT_MANAGER)
+    assert facts.planning_values["lead_time_days"].value == 14
+    assert facts.planning_values["lead_time_days"].citation.source_id == "DOC-CON-S950-v3"
+    assert any(
+        f.source_id == "DOC-CON-S950-draft"
+        and f.category == "invalid_metadata"
+        and f.snippet.startswith("version")
+        for f in service.ingestion_findings
+    )
