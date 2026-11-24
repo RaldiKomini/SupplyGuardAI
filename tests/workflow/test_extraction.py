@@ -3,14 +3,22 @@
 import asyncio
 from decimal import Decimal
 
+import pytest
 from langchain_core.messages import AIMessage, HumanMessage
 from langchain_core.runnables import RunnableLambda
+from pydantic import ValidationError
 
-from supplyguard.contracts import ComponentCandidate, SpendingCapSource, SupplierCandidate
+from supplyguard.contracts import (
+    ComponentCandidate,
+    ConfirmedIncident,
+    SpendingCapSource,
+    SupplierCandidate,
+)
 from supplyguard.workflow.intake.extraction import (
     IncidentExtraction,
     confirm_incident,
     extract,
+    spending_limit,
     transcript,
 )
 
@@ -94,3 +102,49 @@ def test_missing_cap_uses_policy_default() -> None:
 
     assert incident.spending_cap_eur == Decimal("75000")
     assert incident.spending_cap_source is SpendingCapSource.POLICY_DEFAULT
+
+
+def test_message_cannot_turn_off_purchase_approval() -> None:
+    """Approval is a code rule: neither the model's output nor the contract has a switch for it."""
+    assert "purchase_order_needs_approval" not in IncidentExtraction.model_fields
+    with pytest.raises(ValidationError):
+        IncidentExtraction(purchase_order_needs_approval=False)
+    assert "purchase_order_requires_approval" not in ConfirmedIncident.model_fields
+
+
+def test_user_can_lower_the_spending_cap() -> None:
+    assert spending_limit(50000) == (Decimal("50000"), SpendingCapSource.MESSAGE, None)
+
+
+def test_user_cannot_raise_the_spending_cap() -> None:
+    """Above EUR 75,000 needs Finance Director approval: keep the request, plan with the cap."""
+    cap, source, requested = spending_limit(90000)
+
+    assert cap == Decimal("75000")
+    assert source is SpendingCapSource.POLICY_DEFAULT
+    assert requested == Decimal("90000")
+
+
+def test_no_stated_cap_uses_the_policy_cap() -> None:
+    assert spending_limit(None) == (Decimal("75000"), SpendingCapSource.POLICY_DEFAULT, None)
+
+
+def test_confirmed_incident_keeps_a_higher_request_without_applying_it() -> None:
+    extraction = IncidentExtraction(
+        supplier_query="Atlas Components",
+        component_query="MC-17",
+        delay_days=12,
+        spending_cap_eur=90000,
+    )
+
+    incident = confirm_incident(
+        case_id="CASE-3",
+        user_id="u-pm-01",
+        original_message="... must not exceed EUR 90,000 ...",
+        extraction=extraction,
+        supplier=ATLAS,
+        component=MC17,
+    )
+
+    assert incident.spending_cap_eur == Decimal("75000")
+    assert incident.requested_spending_cap_eur == Decimal("90000")

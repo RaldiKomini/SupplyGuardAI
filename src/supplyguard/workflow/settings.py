@@ -16,7 +16,8 @@ def policies() -> dict:
     return json.loads((DATA_DIR / "config" / "policies.json").read_text(encoding="utf-8"))
 
 
-def default_spending_cap() -> Decimal:
+def policy_spending_cap() -> Decimal:
+    """The incident spending cap: the default, and the most intake will ever apply."""
     return Decimal(str(policies()["incident_spending_cap_eur"]))
 
 

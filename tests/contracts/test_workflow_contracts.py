@@ -39,9 +39,9 @@ def test_confirmed_incident_new_fields_have_safe_defaults() -> None:
         original_message="Atlas announced a delay for MC-17.",
     )
 
-    assert incident.purchase_order_requires_approval is True
     assert incident.urgency is Urgency.MEDIUM
     assert incident.spending_cap_source is SpendingCapSource.MESSAGE
+    assert incident.requested_spending_cap_eur is None
 
 
 def test_supplier_candidate_for_ambiguous_name() -> None:

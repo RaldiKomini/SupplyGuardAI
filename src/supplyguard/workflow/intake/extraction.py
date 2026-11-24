@@ -7,7 +7,7 @@ from typing import Literal
 from langchain_core.language_models import BaseChatModel
 from langchain_core.messages import BaseMessage, HumanMessage
 from langchain_core.prompts import ChatPromptTemplate
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 from supplyguard.contracts import (
     ComponentCandidate,
@@ -15,11 +15,13 @@ from supplyguard.contracts import (
     SpendingCapSource,
     SupplierCandidate,
 )
-from supplyguard.workflow.settings import default_spending_cap, scenario_date
+from supplyguard.workflow.settings import policy_spending_cap, scenario_date
 
 
 class IncidentExtraction(BaseModel):
     """What the model fills. Names are copied as written; code resolves them to IDs."""
+
+    model_config = ConfigDict(extra="forbid")
 
     supplier_query: str | None = Field(None, description="Supplier exactly as written.")
     component_query: str | None = Field(
@@ -32,9 +34,6 @@ class IncidentExtraction(BaseModel):
     urgency: Literal["low", "medium", "high", "critical"] | None = None
     spending_cap_eur: float | None = Field(
         None, description="Spending limit, if the user states one."
-    )
-    purchase_order_needs_approval: bool = Field(
-        True, description="False only if the user explicitly allows ordering without approval."
     )
 
 
@@ -69,6 +68,22 @@ async def extract(model: BaseChatModel, messages: Sequence[BaseMessage]) -> Inci
     return await extractor.ainvoke(EXTRACT_PROMPT.format_messages(transcript=transcript(messages)))
 
 
+def spending_limit(
+    stated_eur: float | None,
+) -> tuple[Decimal, SpendingCapSource, Decimal | None]:
+    """(limit used for planning, where it came from, higher limit requested but not applied).
+
+    A user may lower the policy cap but never raise it here.
+    """
+    policy_cap = policy_spending_cap()
+    if stated_eur is None:
+        return policy_cap, SpendingCapSource.POLICY_DEFAULT, None
+    stated = Decimal(str(stated_eur))
+    if stated <= policy_cap:
+        return stated, SpendingCapSource.MESSAGE, None
+    return policy_cap, SpendingCapSource.POLICY_DEFAULT, stated
+
+
 def confirm_incident(
     *,
     case_id: str,
@@ -81,8 +96,7 @@ def confirm_incident(
     """The shared contract, once supplier, component and delay are certain."""
     if extraction.delay_days is None:
         raise ValueError("delay_days must be known before confirming the incident")
-    stated_cap = extraction.spending_cap_eur
-    cap_given = stated_cap is not None
+    cap, cap_source, requested_cap = spending_limit(extraction.spending_cap_eur)
     return ConfirmedIncident(
         case_id=case_id,
         user_id=user_id,
@@ -92,12 +106,10 @@ def confirm_incident(
         component_description=component.description,
         delay_days=extraction.delay_days,
         scenario_date=scenario_date(),
-        spending_cap_eur=Decimal(str(stated_cap)) if cap_given else default_spending_cap(),
-        spending_cap_source=(
-            SpendingCapSource.MESSAGE if cap_given else SpendingCapSource.POLICY_DEFAULT
-        ),
+        spending_cap_eur=cap,
+        spending_cap_source=cap_source,
+        requested_spending_cap_eur=requested_cap,
         original_message=original_message,
         disruption_type=extraction.disruption_type or "delay",
         urgency=extraction.urgency or "medium",
-        purchase_order_requires_approval=extraction.purchase_order_needs_approval,
     )

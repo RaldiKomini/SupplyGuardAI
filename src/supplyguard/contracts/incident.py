@@ -67,4 +67,6 @@ class ConfirmedIncident(ContractModel):
     disruption_type: DisruptionType = DisruptionType.DELAY
     urgency: Urgency = Urgency.MEDIUM
     spending_cap_source: SpendingCapSource = SpendingCapSource.MESSAGE
-    purchase_order_requires_approval: bool = True
+    # A limit above the policy cap that the user asked for. It is not applied: raising the
+    # cap needs Finance Director approval, decided by the approval rules.
+    requested_spending_cap_eur: Decimal | None = Field(default=None, ge=0)
