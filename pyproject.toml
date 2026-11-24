@@ -48,6 +48,7 @@ testpaths = ["tests"]
 markers = ["integration: requires local Docker and RUN_INTEGRATION=1"]
 
 [tool.ruff]
+extend-exclude = ["support-data"]
 line-length = 100
 target-version = "py313"
 
