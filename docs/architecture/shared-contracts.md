@@ -22,6 +22,9 @@ IncidentInput
 - Monetary values use `Decimal`, never binary floats.
 - Dates and timestamps use typed `date` and timezone-aware `datetime` values.
 - Material claims carry `SourceReference` values.
+- Operational coverage is reported per location through `CoveragePosition`.
+- Important numbers include a `CalculationTrace` with formula, inputs, result, unit, and sources.
+- External-risk evidence identifies the relevant upstream manufacturer and alert date.
 - Warnings use `DataQualityWarning` or `SecurityFinding` rather than free-form logging only.
 - Approval includes a stable hash of the exact canonical action payload.
 - Execution includes an idempotency key.

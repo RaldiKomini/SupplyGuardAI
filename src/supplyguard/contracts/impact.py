@@ -51,6 +51,25 @@ class SupplierCapability(ContractModel):
     sources: tuple[SourceReference, ...] = ()
 
 
+class CoveragePosition(ContractModel):
+    factory_id: str | None = None
+    location_id: str
+    usable_units: int = Field(ge=0)
+    daily_demand_units: Decimal = Field(ge=0)
+    days_of_cover: Decimal | None = Field(default=None, ge=0)
+    projected_stockout_date: date | None = None
+    sources: tuple[SourceReference, ...] = ()
+
+
+class CalculationTrace(ContractModel):
+    calculation: str
+    formula: str
+    inputs: dict[str, Decimal | int]
+    result: Decimal | int
+    unit: str
+    sources: tuple[SourceReference, ...] = ()
+
+
 class ImpactReport(ContractModel):
     case_id: str
     component_id: str
@@ -64,6 +83,8 @@ class ImpactReport(ContractModel):
     at_risk_orders: tuple[AtRiskOrder, ...]
     revenue_at_risk_eur: Decimal = Field(ge=0)
     supplier_capabilities: tuple[SupplierCapability, ...] = ()
+    coverage: tuple[CoveragePosition, ...] = ()
+    calculations: tuple[CalculationTrace, ...] = ()
     warnings: tuple[DataQualityWarning, ...] = ()
     sources: tuple[SourceReference, ...] = ()
 
@@ -85,10 +106,12 @@ class DependencyReport(ContractModel):
 
 class RiskEvidence(ContractModel):
     provider: str
+    upstream_manufacturer_id: str | None = None
     region: str | None = None
     topic: str
     severity: str
     summary: str
+    alert_date: date | None = None
     retrieved_at: AwareDatetime
     available: bool = True
     sources: tuple[SourceReference, ...] = ()
