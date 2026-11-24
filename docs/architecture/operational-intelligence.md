@@ -62,7 +62,7 @@ The graph loader uses parameterized `UNWIND` plus `MERGE`, making repeated runs 
 
 ## External-risk MCP
 
-The MCP v2 server exposes one read-only tool, `get_external_risk_alerts`. It wraps the supplied HTTP feed rather than copying that service's data into application logic. The client caches each region for five minutes and records the retrieval timestamp. Timeout, protocol, or provider failure yields `external_risk_unavailable` and the investigation continues.
+The MCP server exposes one read-only tool, `get_external_risk_alerts`. It uses the MCP 1.x line supported by the current Chainlit runtime and wraps the supplied HTTP feed rather than copying that service's data into application logic. The client caches each region for five minutes and records the retrieval timestamp. Timeout, protocol, or provider failure yields `external_risk_unavailable` and the investigation continues.
 
 Start it with:
 

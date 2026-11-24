@@ -1,6 +1,7 @@
 """Small MCP client kept behind a domain-specific method."""
 
 import json
+from datetime import timedelta
 from typing import Any
 
 from mcp import ClientSession
@@ -16,14 +17,16 @@ class McpRiskClient:
 
     async def alerts(self, region: str | None = None) -> tuple[ProviderAlert, ...]:
         async with (
-            streamable_http_client(self.url) as (read_stream, write_stream),
+            streamable_http_client(self.url) as (read_stream, write_stream, _),
             ClientSession(
-                read_stream, write_stream, read_timeout_seconds=self.timeout_seconds
+                read_stream,
+                write_stream,
+                read_timeout_seconds=timedelta(seconds=self.timeout_seconds),
             ) as session,
         ):
             await session.initialize()
             result = await session.call_tool("get_external_risk_alerts", {"region": region})
-        payload: Any = getattr(result, "structured_content", None)
+        payload: Any = getattr(result, "structuredContent", None)
         if payload is None:
             content = getattr(result, "content", ())
             text = next((item.text for item in content if hasattr(item, "text")), "{}")
