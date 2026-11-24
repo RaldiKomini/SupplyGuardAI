@@ -1,5 +1,6 @@
 """Tests for authentication and role-to-scope mapping."""
 
+import csv
 import re
 from pathlib import Path
 
@@ -10,13 +11,9 @@ from supplyguard.auth import AccessRegistry, load_access_config
 
 ROOT = Path(__file__).resolve().parents[2]
 CONFIG_PATH = ROOT / "config" / "access.toml"
-# Scope names the retrieval layer and the supplied data use.
-KNOWN_SCOPES = {"public", "internal", "procurement", "finance-confidential"}
-PASSWORDS = {
-    "AUTH_PASSWORD_U_RO_01": "pw-ro",
-    "AUTH_PASSWORD_U_PM_01": "pw-pm",
-    "AUTH_PASSWORD_U_FIN_01": "pw-fin",
-}
+USERS_CSV = ROOT / "support-data" / "config" / "users.csv"
+PASSWORDS = {user.password_env: f"pw-{user.id}" for user in load_access_config(CONFIG_PATH).users}
+BASE_SCOPES = ("internal", "procurement", "public")
 
 
 @pytest.fixture
@@ -25,31 +22,33 @@ def registry() -> AccessRegistry:
 
 
 @pytest.mark.parametrize(
-    ("user_id", "password", "role", "scopes"),
+    ("user_id", "role", "scopes", "factories"),
     [
-        ("u-ro-01", "pw-ro", "viewer", ("public",)),
+        ("u-pm-01", "procurement_manager", BASE_SCOPES, ("F1", "F2", "F3")),
+        ("u-an-01", "operations_analyst", BASE_SCOPES, ("F1",)),
+        ("u-ic-01", "incident_coordinator", BASE_SCOPES, ("F2", "F3")),
         (
-            "u-pm-01",
-            "pw-pm",
-            "procurement_manager",
-            ("internal", "procurement", "public"),
-        ),
-        (
-            "u-fin-01",
-            "pw-fin",
+            "u-fc-01",
             "finance_controller",
-            ("finance-confidential", "internal", "procurement", "public"),
+            ("finance-confidential", *BASE_SCOPES),
+            ("F1", "F2", "F3"),
         ),
+        ("u-ro-01", "viewer", ("public",), ()),
     ],
 )
-def test_each_role_receives_its_scopes(
-    registry: AccessRegistry, user_id: str, password: str, role: str, scopes: tuple[str, ...]
+def test_each_user_receives_role_scopes_and_factories(
+    registry: AccessRegistry,
+    user_id: str,
+    role: str,
+    scopes: tuple[str, ...],
+    factories: tuple[str, ...],
 ) -> None:
-    context = registry.authenticate(user_id, password)
+    context = registry.authenticate(user_id, f"pw-{user_id}")
 
     assert context is not None
     assert context.role == role
     assert context.allowed_scopes == scopes
+    assert context.factory_ids == factories
 
 
 def test_only_finance_controller_receives_finance_confidential(registry: AccessRegistry) -> None:
@@ -60,13 +59,18 @@ def test_only_finance_controller_receives_finance_confidential(registry: AccessR
         assert has_scope == (user.role == "finance_controller")
 
 
-def test_configured_scopes_and_factories_match_the_supplied_data_vocabulary() -> None:
+def test_access_config_matches_the_supplied_users_csv(registry: AccessRegistry) -> None:
+    with USERS_CSV.open(encoding="utf-8", newline="") as handle:
+        rows = list(csv.DictReader(handle))
     config = load_access_config(CONFIG_PATH)
 
-    for role in config.roles.values():
-        assert set(role.scopes) <= KNOWN_SCOPES
-    for user in config.users:
-        assert all(re.fullmatch(r"F\d+", factory) for factory in user.factory_ids)
+    assert {user.id for user in config.users} == {row["user_id"] for row in rows}
+    for row in rows:
+        context = registry.authorization_for(row["user_id"])
+        assert context is not None
+        assert context.role == row["role"]
+        assert set(context.allowed_scopes) == set(row["document_scopes"].split(";"))
+        assert set(context.factory_ids) == set(filter(None, row["factory_access"].split(";")))
 
 
 def test_env_example_ships_no_credentials() -> None:
@@ -75,36 +79,37 @@ def test_env_example_ships_no_credentials() -> None:
         for line in (ROOT / ".env.example").read_text(encoding="utf-8").splitlines()
         if re.match(r"(AUTH_PASSWORD_|CHAINLIT_AUTH_SECRET)", line)
     )
+    expected = {user.password_env for user in load_access_config(CONFIG_PATH).users}
 
-    assert values
+    assert expected | {"CHAINLIT_AUTH_SECRET"} == set(values)
     assert all(value == "" for value in values.values())
 
 
+def test_compose_passes_every_account_password_to_the_app() -> None:
+    compose = (ROOT / "docker-compose.yml").read_text(encoding="utf-8")
+
+    for user in load_access_config(CONFIG_PATH).users:
+        assert f"{user.password_env}: ${{{user.password_env}:-}}" in compose
+
+
 def test_wrong_password_is_rejected(registry: AccessRegistry) -> None:
-    assert registry.authenticate("u-fin-01", "pw-ops") is None
+    assert registry.authenticate("u-fc-01", "pw-u-an-01") is None
 
 
 def test_unknown_user_is_rejected(registry: AccessRegistry) -> None:
-    assert registry.authenticate("u-nobody", "pw-fin") is None
+    assert registry.authenticate("u-nobody", "pw-u-fc-01") is None
     assert registry.authenticate("u-nobody", "") is None
 
 
-@pytest.mark.parametrize("environ", [{}, {"AUTH_PASSWORD_U_FIN_01": ""}])
+@pytest.mark.parametrize("environ", [{}, {"AUTH_PASSWORD_U_FC_01": ""}])
 def test_user_without_configured_password_cannot_sign_in(environ: dict[str, str]) -> None:
     registry = AccessRegistry(load_access_config(CONFIG_PATH), environ=environ)
 
-    assert registry.authenticate("u-fin-01", "") is None
+    assert registry.authenticate("u-fc-01", "") is None
 
 
 def test_authorization_for_unknown_user_is_none(registry: AccessRegistry) -> None:
     assert registry.authorization_for("u-nobody") is None
-
-
-def test_authorization_includes_factories(registry: AccessRegistry) -> None:
-    context = registry.authorization_for("u-pm-01")
-
-    assert context is not None
-    assert context.factory_ids == ("F1", "F2", "F3")
 
 
 def test_committed_config_contains_no_credentials() -> None:
