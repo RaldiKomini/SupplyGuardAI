@@ -120,3 +120,16 @@ def test_plan_with_only_warnings_does_not_need_revision() -> None:
     )
 
     assert not plan.needs_revision
+
+
+def test_same_user_cannot_approve_twice() -> None:
+    with pytest.raises(ValidationError):
+        ApprovalDecision(
+            approval_request_id="APR-001",
+            case_id="CASE-001",
+            payload_hash="sha256:abc",
+            approved=True,
+            approver_user_ids=("u-pm-01", "u-pm-01"),
+            approver_roles=("procurement_manager", "finance_controller"),
+            decided_at=DECIDED_AT,
+        )

@@ -48,4 +48,12 @@ IncidentInput
 
 The application layer authenticates the user and builds an immutable `AuthorizationContext` (user, role, factories, allowed scopes). It is passed unchanged to the workflow and to `EvidenceService.retrieve`. An empty `allowed_scopes` means no document access. Components must not widen or derive scopes themselves, and `CaseWorkflowService` implementations must reject cases owned by another user.
 
+## Approval and execution
+
+- `ApprovalDecision` records one role per approver. An approval tier that requires two people (for example procurement manager and finance controller above EUR 25,000) must be satisfied by two distinct authenticated users. One user holding two roles does not count twice.
+- A decision applies only to the `payload_hash` it names. Changing supplier, quantity, price, or conditions goes through `ApprovalService.revalidate`, which returns a new `ApprovalRequest` with a new hash and `payload_version`. Earlier decisions never carry over.
+- `ProcurementExecutionService.execute` returns `tuple[ExecutionResult, ...]`, one result per action. Workflow and UI callers must handle several results, including partial failure. Each result carries `approval_request_id`, `action_id`, `action_type`, and `idempotency_key`.
+- Recovery plans carry `challenge_findings`; `RecoveryPlan.needs_revision` is true when any finding is blocking.
+
+
 Changes follow the contract-change procedure in `COLLABORATION.md`.

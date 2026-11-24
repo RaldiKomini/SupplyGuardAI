@@ -85,6 +85,15 @@ class ApprovalRequest(ContractModel):
 
 
 class ApprovalDecision(ContractModel):
+    """A human decision on one exact approval payload.
+
+    Rules for the approval implementation:
+    - An approval tier that needs two people is satisfied only by two distinct
+      authenticated users, never by one user holding two roles.
+    - The decision is valid only for the payload_hash it names. Any change to the
+      payload produces a new ApprovalRequest that needs a fresh decision.
+    """
+
     approval_request_id: str
     case_id: str
     payload_hash: str
@@ -100,6 +109,8 @@ class ApprovalDecision(ContractModel):
             raise ValueError("an approved decision requires at least one approver")
         if self.approved and len(self.approver_roles) != len(self.approver_user_ids):
             raise ValueError("every approver needs exactly one role")
+        if len(set(self.approver_user_ids)) != len(self.approver_user_ids):
+            raise ValueError("approver_user_ids must be distinct users")
         return self
 
 
