@@ -34,7 +34,12 @@ from supplyguard.contracts.planning import (
 class CaseWorkflowService(Protocol):
     """Workflow entry points called by the application layer.
 
-    Implementations must reject a case whose owner differs from `authorization.user_id`.
+    Case access is owner-only: implementations must reject a case whose owner differs from
+    `authorization.user_id`. The one exception is `submit_approval`, which must also accept an
+    authorized approver: a user whose `authorization.role` is in `required_approver_roles` of the
+    pending `ApprovalRequest` named by `decision.approval_request_id`, provided that request
+    belongs to `decision.case_id` and the decision's `payload_hash` matches. That approver gains
+    no other access to the case.
     """
 
     def start_case(
