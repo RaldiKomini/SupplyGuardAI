@@ -33,6 +33,6 @@ def test_invalid_inventory_is_rejected() -> None:
 
 
 def test_cost_and_penalty_rounding() -> None:
-    assert estimate_late_penalty(Decimal("1000"), 8, Decimal("0.02")) == Decimal("40.00")
-    assert estimate_late_penalty(Decimal("1000"), 100, Decimal("0.02")) == Decimal("100.00")
-    assert expedite_cost(Decimal("123.45"), Decimal("0.075")) == Decimal("9.26")
+    assert estimate_late_penalty(Decimal("1000"), 8, Decimal("2")) == Decimal("40.00")
+    assert estimate_late_penalty(Decimal("1000"), 100, Decimal("2")) == Decimal("100.00")
+    assert expedite_cost(Decimal("123.45"), Decimal("7.5")) == Decimal("9.26")

@@ -6,9 +6,11 @@ from supplyguard.calculations.impact import (
     projected_shortfall,
     projected_stockout_date,
 )
+from supplyguard.calculations.service import DeterministicCostService
 
 __all__ = [
     "days_of_cover",
+    "DeterministicCostService",
     "estimate_late_penalty",
     "projected_shortfall",
     "projected_stockout_date",

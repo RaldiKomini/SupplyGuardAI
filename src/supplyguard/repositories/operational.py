@@ -64,6 +64,20 @@ class FactoryDemandRow:
     daily_units: Decimal
 
 
+@dataclass(frozen=True)
+class OpenPurchaseOrderRow:
+    po_id: str
+    supplier_id: str
+    component_id: str
+    quantity: int
+    unit_price_eur: Decimal
+    promised_date: date
+    status: str
+    expedite_allowed: bool
+    expedite_fee_percentage: Decimal
+    expedite_days_gain: int
+
+
 class OperationalRepository:
     def __init__(self, connection: AsyncConnection) -> None:
         self.connection = connection
@@ -202,6 +216,33 @@ class OperationalRepository:
         )
         promised = (await self.connection.execute(statement)).scalar_one_or_none()
         return max(0, (promised - scenario_date).days) if promised else 0
+
+    async def open_purchase_orders(self, component_id: str) -> tuple[OpenPurchaseOrderRow, ...]:
+        statement = (
+            select(
+                purchase_orders.c.po_id,
+                purchase_orders.c.supplier_id,
+                purchase_orders.c.component_id,
+                purchase_orders.c.qty,
+                purchase_orders.c.unit_price_eur,
+                purchase_orders.c.promised_date,
+                purchase_orders.c.status,
+                purchase_orders.c.expedite_allowed,
+                purchase_orders.c.expedite_fee_pct,
+                purchase_orders.c.expedite_days_gain,
+            )
+            .where(
+                and_(
+                    purchase_orders.c.component_id == component_id,
+                    purchase_orders.c.status.in_(("open", "confirmed", "in_transit")),
+                    purchase_orders.c.supplier_id.is_not(None),
+                    purchase_orders.c.promised_date.is_not(None),
+                )
+            )
+            .order_by(purchase_orders.c.promised_date, purchase_orders.c.po_id)
+        )
+        rows = (await self.connection.execute(statement)).all()
+        return tuple(OpenPurchaseOrderRow(*row) for row in rows)
 
     async def quality_warnings(self, record_ids: Sequence[str]) -> tuple[DataQualityWarning, ...]:
         if not record_ids:

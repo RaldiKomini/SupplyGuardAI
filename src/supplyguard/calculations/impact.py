@@ -43,16 +43,20 @@ def projected_stockout_date(
 
 
 def estimate_late_penalty(
-    revenue_eur: Decimal, delay_days: int, weekly_rate: Decimal, *, cap_weeks: int = 5
+    revenue_eur: Decimal,
+    delay_days: int,
+    weekly_rate_percentage: Decimal,
+    *,
+    cap_weeks: int = 5,
 ) -> Decimal:
     """Apply a weekly order penalty, charging any partial week as a full week."""
-    if min(revenue_eur, weekly_rate) < 0 or delay_days < 0:
+    if min(revenue_eur, weekly_rate_percentage) < 0 or delay_days < 0:
         raise ValueError("penalty inputs cannot be negative")
     weeks = min(cap_weeks, int((Decimal(delay_days) / 7).to_integral_value(rounding=ROUND_CEILING)))
-    return (revenue_eur * weekly_rate * weeks).quantize(Decimal("0.01"))
+    return (revenue_eur * (weekly_rate_percentage / 100) * weeks).quantize(Decimal("0.01"))
 
 
 def expedite_cost(base_cost_eur: Decimal, fee_percentage: Decimal) -> Decimal:
     if min(base_cost_eur, fee_percentage) < 0:
         raise ValueError("cost inputs cannot be negative")
-    return (base_cost_eur * fee_percentage).quantize(Decimal("0.01"))
+    return (base_cost_eur * (fee_percentage / 100)).quantize(Decimal("0.01"))
