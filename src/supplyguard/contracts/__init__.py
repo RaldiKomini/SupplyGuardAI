@@ -26,7 +26,16 @@ from supplyguard.contracts.impact import (
     SupplierCapability,
     TransferCostInput,
 )
-from supplyguard.contracts.incident import ConfirmedIncident, IncidentInput
+from supplyguard.contracts.incident import (
+    ComponentCandidate,
+    ConfirmedIncident,
+    DisruptionType,
+    IncidentInput,
+    SpendingCapSource,
+    SupplierCandidate,
+    Urgency,
+)
+from supplyguard.contracts.memory import ResolutionMemory
 from supplyguard.contracts.planning import (
     ApprovalDecision,
     ApprovalRequest,
@@ -48,12 +57,14 @@ __all__ = [
     "CaseStatus",
     "CaseSummary",
     "ChallengeFinding",
+    "ComponentCandidate",
     "ConfirmedIncident",
     "ContractModel",
     "CoveragePosition",
     "DataQualityWarning",
     "DependencyFinding",
     "DependencyReport",
+    "DisruptionType",
     "EvaluationResult",
     "EvaluationStatus",
     "EvidenceBundle",
@@ -72,12 +83,16 @@ __all__ = [
     "RecoveryActionType",
     "RecoveryOption",
     "RecoveryPlan",
+    "ResolutionMemory",
     "RiskEvidence",
     "SecurityFinding",
     "Severity",
     "SourceReference",
+    "SpendingCapSource",
+    "SupplierCandidate",
     "SupplierCapability",
     "TransferCostInput",
     "UIEvent",
     "UIEventType",
+    "Urgency",
 ]
