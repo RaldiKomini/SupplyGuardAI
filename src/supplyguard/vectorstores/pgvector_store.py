@@ -124,3 +124,12 @@ class PgVectorStore:
         with self.conn.cursor() as cur:
             cur.execute(f"SELECT count(*) FROM {self.table}")
             return cur.fetchone()[0]
+
+    def all_chunks(self) -> list[DocumentChunk]:
+        with self.conn.cursor() as cur:
+            cur.execute(f"SELECT {', '.join(COLUMNS)}, text FROM {self.table}")
+            rows = cur.fetchall()
+        return [
+            DocumentChunk.from_metadata(row[len(COLUMNS)], dict(zip(COLUMNS, row, strict=False)))
+            for row in rows
+        ]

@@ -44,3 +44,6 @@ class InMemoryVectorStore:
 
     def count(self) -> int:
         return len(self._chunks)
+
+    def all_chunks(self) -> list[DocumentChunk]:
+        return list(self._chunks.values())

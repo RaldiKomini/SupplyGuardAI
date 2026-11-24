@@ -33,7 +33,7 @@ from pathlib import Path
 
 from supplyguard.contracts import AuthorizationContext, ConfirmedIncident, EvidenceBundle
 from supplyguard.guardrails.access import enforce_scope, scopes_from
-from supplyguard.guardrails.injection import detect_injection
+from supplyguard.guardrails.injection import detect_injection, findings_from_flags
 from supplyguard.retrieval.conflicts import extract_facts, resolve
 from supplyguard.retrieval.contract_mapping import (
     to_evidence_conflict,
@@ -94,7 +94,10 @@ class EvidenceService:
         self.memory_store = memory_store
         self.scenario_date = scenario_date
         self.retriever = Retriever(vector_store=document_store, lexical=BM25Index(chunks))
-        self._memory_chunks: list[DocumentChunk] = []
+        # Keyword index of the memory collection. It starts with every memory already in the
+        # store, so memories saved before a restart are found by BOTH searches (keyword and
+        # vector), not only by the vector one.
+        self._memory_chunks: list[DocumentChunk] = list(memory_store.all_chunks())
         self._memory_findings: list[ContentFinding] = []
         self._chunk_by_source = {c.citation.source_id: c for c in chunks}
 
@@ -106,14 +109,20 @@ class EvidenceService:
         backend: str = "memory",
         index: bool = True,
         embeddings=None,
+        stores: tuple | None = None,
     ) -> EvidenceService:
         """Load documents from disk. With index=True the chunks are (re)written to the
-        vector store; use index=False when scripts/index_documents.py already did that."""
+        vector store; use index=False when scripts/index_documents.py already did that.
+        `stores` = (document_store, memory_store) to reuse already-open stores (tests use it
+        to restart the service on the same in-memory "database")."""
         root = Path(support_data_dir)
         embeddings = embeddings or get_embeddings()
         chunks, findings = ingest_documents(root / "documents")
-        doc_store = make_vector_store(backend, embeddings, "documents")
-        mem_store = make_vector_store(backend, embeddings, "memories")
+        if stores is not None:
+            doc_store, mem_store = stores
+        else:
+            doc_store = make_vector_store(backend, embeddings, "documents")
+            mem_store = make_vector_store(backend, embeddings, "memories")
         scenario = DEFAULT_SCENARIO_DATE
         policies = root / "config" / "policies.json"
         if policies.exists():
@@ -123,7 +132,7 @@ class EvidenceService:
         memories, memory_findings = [], []
         if memories_file.exists():
             memories, memory_findings = load_incident_memories_with_findings(memories_file)
-        service._memory_chunks = memories
+        service._add_memory_chunks(memories)
         service._memory_findings = memory_findings
         if index:
             doc_store.add(chunks)
@@ -274,7 +283,15 @@ class EvidenceService:
         )
         result = retriever.retrieve(query, scopes, k=k)
         returned = {e.citation.source_id for e in result.evidence}
-        result.security_findings = [f for f in self._memory_findings if f.source_id in returned]
+        findings = [f for f in self._memory_findings if f.source_id in returned]
+        # After a restart, memories saved earlier come back from the vector store, but their
+        # detailed findings were only in memory. Rebuild them from the flags stored with
+        # the chunk, so a finding is never lost.
+        known = {f.source_id for f in self._memory_findings}
+        for e in result.evidence:
+            if e.citation.source_id not in known and e.chunk.security_flags:
+                findings += findings_from_flags(e.citation.source_id, e.chunk.security_flags)
+        result.security_findings = findings
         if result.security_findings:
             result.notes.append("Embedded instructions were found and removed; they were ignored.")
         return result
@@ -288,8 +305,7 @@ class EvidenceService:
             raise ValueError(f"memory record is missing {sorted(missing)}")
         chunk, findings = memory_to_chunk_with_findings(record)
         self.memory_store.add([chunk])
-        others = [c for c in self._memory_chunks if c.chunk_id != chunk.chunk_id]
-        self._memory_chunks = [*others, chunk]
+        self._add_memory_chunks([chunk])
         # Re-indexing the same memory replaces its old findings.
         mid = chunk.citation.source_id
         self._memory_findings = [f for f in self._memory_findings if f.source_id != mid] + findings
@@ -301,6 +317,11 @@ class EvidenceService:
         return tuple(to_security_finding(f, None) for f in detect_injection(text, source_id))
 
     # ============================================================ private helpers
+    def _add_memory_chunks(self, chunks: list[DocumentChunk]) -> None:
+        """Add or replace memories in the keyword index (one entry per chunk_id)."""
+        new_ids = {c.chunk_id for c in chunks}
+        self._memory_chunks = [c for c in self._memory_chunks if c.chunk_id not in new_ids] + chunks
+
     def _findings_for(self, source_ids: set[str]) -> list[ContentFinding]:
         return [f for f in self.ingestion_findings if f.source_id in source_ids]
 

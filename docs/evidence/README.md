@@ -132,6 +132,8 @@ similar = await memories.search("MC-17 delay", authorization, limit=3)  # -> Res
   with the sanitized text that was indexed. Memories come back from the stored chunk text,
   so they are found again after a restart. The `sources` of a saved memory are not stored.
 - Memory searches also report guardrail findings (`search_incident_memories`, `..._bundle`).
+- After a restart, memories already in pgvector/Chroma are reloaded into the keyword index
+  (`all_chunks()`), and their findings are rebuilt from the stored `security_flags`.
 
 ## 4. Design decisions (and why)
 
