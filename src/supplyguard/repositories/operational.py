@@ -2,7 +2,7 @@
 
 from collections.abc import Sequence
 from dataclasses import dataclass
-from datetime import date
+from datetime import date, timedelta
 from decimal import Decimal
 
 from sqlalchemy import Select, and_, func, or_, select
@@ -20,6 +20,8 @@ from supplyguard.data.schema import (
     supplier_components,
     suppliers,
 )
+
+ORDER_EXPOSURE_HORIZON_DAYS = 60
 
 
 @dataclass(frozen=True)
@@ -94,7 +96,9 @@ class OperationalRepository:
                 inventory.c.usable,
                 inventory.c.last_counted_date,
             )
-            .select_from(inventory.outerjoin(locations))
+            .select_from(
+                inventory.outerjoin(locations, inventory.c.location_id == locations.c.location_id)
+            )
             .where(inventory.c.component_id == component_id)
             .order_by(inventory.c.location_id)
         )
@@ -144,7 +148,12 @@ class OperationalRepository:
                 func.sum(production_schedule.c.planned_units * bill_of_materials.c.qty_per_unit),
                 func.count(func.distinct(production_schedule.c.week_start)),
             )
-            .select_from(production_schedule.join(bill_of_materials))
+            .select_from(
+                production_schedule.join(
+                    bill_of_materials,
+                    production_schedule.c.product_id == bill_of_materials.c.product_id,
+                )
+            )
             .where(
                 and_(
                     bill_of_materials.c.component_id == component_id,
@@ -160,7 +169,9 @@ class OperationalRepository:
             for factory_id, units, weeks in result.all()
         )
 
-    async def open_orders(self, product_ids: Sequence[str]) -> tuple[OrderRow, ...]:
+    async def open_orders(
+        self, product_ids: Sequence[str], scenario_date: date
+    ) -> tuple[OrderRow, ...]:
         if not product_ids:
             return ()
         statement = (
@@ -177,6 +188,9 @@ class OperationalRepository:
                 and_(
                     customer_orders.c.product_id.in_(product_ids),
                     customer_orders.c.status.in_(("open", "confirmed", "in_progress")),
+                    customer_orders.c.due_date.between(
+                        scenario_date, scenario_date + timedelta(days=ORDER_EXPOSURE_HORIZON_DAYS)
+                    ),
                 )
             )
             .order_by(customer_orders.c.due_date, customer_orders.c.order_id)
@@ -196,7 +210,11 @@ class OperationalRepository:
                 suppliers.c.erp_status,
                 suppliers.c.upstream_manufacturer_id,
             )
-            .select_from(supplier_components.join(suppliers))
+            .select_from(
+                supplier_components.join(
+                    suppliers, supplier_components.c.supplier_id == suppliers.c.supplier_id
+                )
+            )
             .where(supplier_components.c.component_id == component_id)
             .order_by(supplier_components.c.lead_time_days, supplier_components.c.supplier_id)
         )

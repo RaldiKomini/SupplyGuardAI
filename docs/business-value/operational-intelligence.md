@@ -31,7 +31,17 @@ The initial evaluation should record the manual baseline rather than inventing a
 
 ## MC-17 demonstration
 
-The golden case converts a supplier message into a defensible `5,350`-unit projected shortfall, affected products and customer orders, revenue at risk, alternative supplier capability, and the shared Veltro/TW wafer alert. The business claim is not that the system automatically chooses the cheapest action. Its value is that the human and recovery-planning component receive the same measurable facts, assumptions, warnings, and provenance before committing spend.
+The integration test loaded the supplied data into PostgreSQL and Neo4j and queried
+the risk feed over MCP. From the confirmed incident it returned:
+
+- 3,200 usable units, 450 units of daily demand, and a 5,350-unit projected shortfall;
+- six affected products and 77 open customer orders due in the 60-day exposure window;
+- two open purchase orders, including the €882 expedite estimate for PO-2026-9002;
+- Delta's shared upstream dependency and the high-severity Taiwan wafer alert.
+
+These results reproduce the reference case and give the planner traceable inputs
+before any spending decision. Manual comparison time and realized savings remain
+unmeasured. The integration test covers the operational service after confirmation.
 
 ## Attribution limits
 

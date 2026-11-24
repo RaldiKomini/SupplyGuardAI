@@ -6,6 +6,13 @@ This component answers one bounded question: **what is the measurable operationa
 
 ## Public boundary
 
+The workflow can use `PostgresMasterDataService(database)` from
+`supplyguard.repositories` as its `MasterDataService`. It borrows a connection
+for each lookup and returns candidate IDs and labels. Supplier prefix searches
+preserve ambiguity (for example, Atlas returns S001 and S006). Component
+descriptions return candidates for confirmation, and `suppliers_of()` verifies
+the relationship against the supplied supplier-component records.
+
 Elena's workflow calls `DefaultOperationalIntelligenceService.investigate(ConfirmedIncident)`. The service returns the shared `OperationalIntelligenceResult` contract. No other component should query these tables or Neo4j directly.
 
 ## Internal flow
@@ -34,12 +41,12 @@ Run migrations and loaders:
 ```powershell
 $env:DATABASE_URL = "postgresql://supplyguard:change-me@127.0.0.1:5432/supplyguard"
 uv run alembic upgrade head
-uv run supplyguard-load-data C:\path\to\support-data
+uv run supplyguard-load-data support-data/structured
 
 $env:NEO4J_URI = "bolt://127.0.0.1:7687"
 $env:NEO4J_USER = "neo4j"
 $env:NEO4J_PASSWORD = "change-me"
-uv run supplyguard-load-graph C:\path\to\support-data
+uv run supplyguard-load-graph support-data/structured
 ```
 
 The loaders read but never modify the supplied files. Missing primary IDs and invalid inventory balances are blocking findings: the raw record remains staged, but it is not promoted as an authoritative fact. Stale or conflicting data is returned as a warning.
@@ -47,6 +54,11 @@ The loaders read but never modify the supplied files. Missing primary IDs and in
 ## Calculations
 
 Business formulas live in `supplyguard.calculations`; they have no database, network, or model dependency. Important results include their formula, typed inputs, result, unit, and sources.
+
+Open customer orders due from the incident date through 60 days later form the
+initial exposure set for affected products. The total represents exposure before
+recovery. The graph also flags alternatives that share the disrupted supplier's
+upstream manufacturer.
 
 Open purchase orders for the disrupted component are returned in `ImpactReport`, including expedite eligibility, percentage fee, and days gained. Recovery planning calls `DeterministicCostService` through the shared `OperationalCostService` protocol. CSV percentage values are percentage points: `6` means `6%`, so PO-2026-9002 has a base value of `1,500 × €9.80 = €14,700` and an expedite fee of `€14,700 × 6 / 100 = €882`.
 
@@ -91,6 +103,11 @@ uv run ruff format --check .
 # Optional real PostgreSQL and Neo4j tests; requires Docker
 $env:RUN_INTEGRATION = "1"
 uv run pytest -m integration
+
+# Verify MC-17 using supplied CSVs, PostgreSQL, Neo4j and the MCP HTTP transport
+uv run pytest tests/integration/test_operational_golden.py
 ```
 
-Unit tests use fakes at I/O boundaries. Opt-in container tests verify idempotent PostgreSQL loading and Neo4j path queries against real engines.
+The golden test uses disposable databases and a local HTTP provider serving the
+supplied risk feed. It checks master-data results, the impact report, shared
+upstream detection, and the alert returned by the MCP server.

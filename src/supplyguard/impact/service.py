@@ -64,7 +64,7 @@ class DefaultOperationalIntelligenceService:
             factory_demand = await self.repository.daily_demand_by_factory(
                 incident.component_id, incident.scenario_date
             )
-            orders = await self.repository.open_orders(product_ids)
+            orders = await self.repository.open_orders(product_ids, incident.scenario_date)
             capabilities = await self.repository.supplier_capabilities(incident.component_id)
             purchase_orders = await self.repository.open_purchase_orders(incident.component_id)
             data_warnings = await self.repository.quality_warnings(
@@ -269,6 +269,19 @@ class DefaultOperationalIntelligenceService:
                 sources=(SourceReference(source_id="neo4j", source_type="graph"),),
             ),
         )
+        if context.shared_upstream_supplier_ids:
+            findings += (
+                DependencyFinding(
+                    finding_type="shared_upstream",
+                    summary="These alternatives share an upstream manufacturer with the supplier.",
+                    node_ids=context.shared_upstream_supplier_ids,
+                    relationship_types=("SOURCES_FROM", "SUPPLIES"),
+                    sources=(
+                        csv_source("suppliers.csv"),
+                        csv_source("supplier_components.csv"),
+                    ),
+                ),
+            )
         return DependencyReport(
             case_id=case_id,
             findings=findings,
