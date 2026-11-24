@@ -1,4 +1,4 @@
-# ADR 0002 Evidence layer: hybrid retrieval, precedence in code, guardrails before indexing
+# ADR 0004 Evidence layer: hybrid retrieval, precedence in code, guardrails before indexing
 
 ## Status
 

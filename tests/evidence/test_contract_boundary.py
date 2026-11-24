@@ -5,11 +5,25 @@ import inspect
 from datetime import date
 from decimal import Decimal
 
-from supplyguard.contracts import ConfirmedIncident, EvidenceBundle, SecurityFinding, Severity
+from supplyguard.contracts import (
+    AuthorizationContext,
+    ConfirmedIncident,
+    EvidenceBundle,
+    SecurityFinding,
+    Severity,
+)
 from supplyguard.contracts.protocols import EvidenceService as EvidenceServiceProtocol
 from supplyguard.retrieval.service import EvidenceService
 
-PROCUREMENT_MANAGER = ("internal", "procurement", "public")
+# As the application layer builds them from support-data/config/users.csv
+PROCUREMENT_MANAGER = AuthorizationContext(
+    user_id="u-pm-01",
+    role="procurement_manager",
+    factory_ids=("F1", "F2", "F3"),
+    allowed_scopes=("public", "internal", "procurement"),
+)
+VIEWER = AuthorizationContext(user_id="u-ro-01", role="viewer", allowed_scopes=("public",))
+NO_SCOPES = AuthorizationContext(user_id="u-x", role="viewer")
 
 GOLDEN = ConfirmedIncident(
     case_id="GOLD-001",
@@ -23,8 +37,8 @@ GOLDEN = ConfirmedIncident(
 )
 
 
-def _bundle(service, scopes=PROCUREMENT_MANAGER) -> EvidenceBundle:
-    return asyncio.run(service.retrieve(GOLDEN, scopes))
+def _bundle(service, authorization=PROCUREMENT_MANAGER) -> EvidenceBundle:
+    return asyncio.run(service.retrieve(GOLDEN, authorization))
 
 
 def test_service_matches_the_shared_protocol():
@@ -39,7 +53,7 @@ def test_retrieve_returns_an_evidence_bundle(service):
     bundle = _bundle(service)
     assert isinstance(bundle, EvidenceBundle)
     assert bundle.case_id == "GOLD-001"
-    assert bundle.applied_access_scopes == PROCUREMENT_MANAGER
+    assert bundle.applied_access_scopes == ("internal", "procurement", "public")
     assert bundle.items
 
 
@@ -69,7 +83,7 @@ def test_every_item_has_provenance_and_a_valid_score(service):
 
 
 def test_injection_is_reported_as_blocking_security_finding(service):
-    bundle = asyncio.run(service.retrieve(GOLDEN, ("public", "internal", "procurement")))
+    bundle = _bundle(service)
     findings = [f for f in bundle.security_findings if f.sources]
     assert findings and all(isinstance(f, SecurityFinding) and f.blocked for f in findings)
     assert {f.sources[0].source_id for f in findings} == {"DOC-NOT-HELIOS-PRICE"}
@@ -79,8 +93,11 @@ def test_injection_is_reported_as_blocking_security_finding(service):
 
 
 def test_scopes_are_applied_at_the_boundary(service):
-    viewer = _bundle(service, ("public",))
+    viewer = _bundle(service, VIEWER)
     assert {i.source.access_scope for i in viewer.items} <= {"public"}
+    # empty allowed_scopes = no document access (shared-contracts.md)
+    nothing = _bundle(service, NO_SCOPES)
+    assert nothing.items == () and nothing.applied_access_scopes == ()
     finance = service.search_bundle("GOLD-001", "margin by customer tier", PROCUREMENT_MANAGER)
     assert all(i.source.access_scope != "finance-confidential" for i in finance.items)
 

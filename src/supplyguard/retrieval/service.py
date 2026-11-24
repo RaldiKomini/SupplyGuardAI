@@ -3,12 +3,15 @@
 
 Public (shared contract) entry point, used by Elena's workflow:
 
-    bundle = await service.retrieve(incident, access_scopes)      # -> contracts.EvidenceBundle
+    bundle = await service.retrieve(incident, authorization)      # -> contracts.EvidenceBundle
+
+`authorization` is the AuthorizationContext built by the application layer. We only read its
+`allowed_scopes`; we never widen or derive scopes (docs/architecture/shared-contracts.md).
 
 Extra helpers that also return shared contracts:
 
-    service.search_bundle(case_id, "Why was Helios rejected?", access_scopes)  # follow-ups
-    service.search_incident_memories_bundle(case_id, "MC-17 delay", access_scopes)
+    service.search_bundle(case_id, "Why was Helios rejected?", authorization)  # follow-ups
+    service.search_incident_memories_bundle(case_id, "MC-17 delay", authorization)
 
 Internal helpers (used by the contract agent, tests and the benchmark; return the
 internal models in retrieval/models.py):
@@ -16,8 +19,8 @@ internal models in retrieval/models.py):
     service.search(query, scopes), service.supplier_facts("S004", scopes),
     service.index_approved_memory({...}), service.scan_untrusted_text(text)
 
-Scopes: a tuple/set of scope names (the protocol passes `access_scopes`), a dict, or
-any object with `allowed_scopes`. Missing or unknown scopes give no access.
+Everywhere `authorization` / `auth_context` may be the AuthorizationContext, a dict, or a
+set of scope names (tests, benchmark). Missing or unknown scopes give no access.
 """
 
 from __future__ import annotations
@@ -28,7 +31,7 @@ import re
 from datetime import UTC, date, datetime
 from pathlib import Path
 
-from supplyguard.contracts import ConfirmedIncident, EvidenceBundle
+from supplyguard.contracts import AuthorizationContext, ConfirmedIncident, EvidenceBundle
 from supplyguard.guardrails.access import enforce_scope, scopes_from
 from supplyguard.guardrails.injection import detect_injection
 from supplyguard.retrieval.conflicts import extract_facts, resolve
@@ -128,7 +131,7 @@ class EvidenceService:
     async def retrieve(
         self,
         incident: ConfirmedIncident,
-        access_scopes: tuple[str, ...],
+        authorization: AuthorizationContext,
         alternative_supplier_ids: tuple[str, ...] | None = None,
     ) -> EvidenceBundle:
         """Documentary evidence for a confirmed incident (protocol method).
@@ -137,16 +140,16 @@ class EvidenceService:
         `alternative_supplier_ids` is optional; if it is not given we use every supplier
         whose notices or e-mails mention the component."""
         return await asyncio.to_thread(
-            self.build_incident_bundle, incident, access_scopes, alternative_supplier_ids
+            self.build_incident_bundle, incident, authorization, alternative_supplier_ids
         )
 
     def build_incident_bundle(
         self,
         incident: ConfirmedIncident,
-        access_scopes,
+        authorization,
         alternative_supplier_ids: tuple[str, ...] | None = None,
     ) -> EvidenceBundle:
-        scopes = scopes_from(access_scopes)
+        scopes = scopes_from(authorization)
         suppliers = [incident.supplier_id]
         alternatives = alternative_supplier_ids or self.suppliers_mentioning(incident.component_id)
         suppliers += [s for s in alternatives if s != incident.supplier_id]
@@ -178,14 +181,14 @@ class EvidenceService:
         )
 
     # ============================================================ shared-contract helpers
-    def search_bundle(self, case_id: str, query: str, access_scopes, k: int = 8, **filters):
+    def search_bundle(self, case_id: str, query: str, authorization, k: int = 8, **filters):
         """Free-text search returned as an EvidenceBundle (e.g. for follow-up questions)."""
-        scopes = scopes_from(access_scopes)
+        scopes = scopes_from(authorization)
         result = self.search(query, scopes, k=k, **filters)
         return self._to_bundle(case_id, query, result.evidence, [], result.conflicts, scopes)
 
-    def search_incident_memories_bundle(self, case_id: str, query: str, access_scopes, k=5):
-        scopes = scopes_from(access_scopes)
+    def search_incident_memories_bundle(self, case_id: str, query: str, authorization, k=5):
+        scopes = scopes_from(authorization)
         result = self.search_incident_memories(query, scopes, k=k)
         return self._to_bundle(case_id, query, result.evidence, [], [], scopes)
 

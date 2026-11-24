@@ -10,7 +10,7 @@ Other components use it only through the shared protocol
 `supplyguard.contracts.protocols.EvidenceService`:
 
 ```python
-bundle = await evidence_service.retrieve(incident, access_scopes)  # -> contracts.EvidenceBundle
+bundle = await evidence_service.retrieve(incident, authorization)  # -> contracts.EvidenceBundle
 ```
 
 Internally we use richer models (`retrieval/models.py`); `retrieval/contract_mapping.py`
@@ -19,7 +19,7 @@ converts them to the shared contracts at the boundary, so nothing internal leaks
 ## 1. How it fits in
 
 ```
-Elpida (auth) ──────── access_scopes ────────────────┐
+Elpiniki (auth) ──── AuthorizationContext ──────────┐
                                                      ▼
 Elena (workflow) ── ConfirmedIncident ──► EvidenceService.retrieve() ──► EvidenceBundle
                                              │        (contract_mapping.py: EvidenceItem,
@@ -74,15 +74,15 @@ from supplyguard.retrieval.service import EvidenceService
 service = EvidenceService.from_support_data("support-data", backend="pgvector", index=False)
 
 # Shared protocol (Elena's document-retrieval node)
-bundle = await service.retrieve(incident, access_scopes=("public", "internal", "procurement"))
+bundle = await service.retrieve(incident, authorization)  # AuthorizationContext
 bundle.items  # EvidenceItem: content, version, effective_date, status, source
 bundle.conflicts  # EvidenceConflict: subject "S004.expedite_fee_pct", selected/conflicting ids
 bundle.security_findings  # SecurityFinding: prompt_injection.*, BLOCKING, blocked=True
 bundle.applied_access_scopes
 
 # Also returning EvidenceBundle
-service.search_bundle(case_id, "Why was Helios rejected?", access_scopes)  # follow-ups
-service.search_incident_memories_bundle(case_id, "MC-17 delay", access_scopes)  # memories
+service.search_bundle(case_id, "Why was Helios rejected?", authorization)  # follow-ups
+service.search_incident_memories_bundle(case_id, "MC-17 delay", authorization)  # memories
 service.scan_untrusted_text(attached_notice)  # -> tuple[SecurityFinding] (EV-0072..0081)
 
 # Writes into the separate memory collection when a case closes
@@ -183,8 +183,7 @@ Dependencies needed (to be added to `pyproject.toml` in a shared-file PR): `nump
 `psycopg[binary]`, `chromadb`, `langchain`, `langchain-core`; optional `langchain-openai` /
 `langchain-huggingface`. Environment variables (to be added to `.env.example`): `EMBEDDINGS_PROVIDER`
 (`hash` | `openai` | `huggingface`), `EMBEDDINGS_MODEL`, `CHROMA_PATH`; already there:
-`DATABASE_URL`, `CHROMA_HOST`, `CHROMA_PORT`. Postgres must use an image with pgvector
-(e.g. `pgvector/pgvector:pg16`) — for Elpida's compose file.
+`DATABASE_URL`, `CHROMA_HOST`, `CHROMA_PORT`. The compose file already uses `pgvector/pgvector:pg17` and a `chroma` service.
 
 ## 6. Acceptance tests → where they are
 
@@ -200,7 +199,7 @@ Dependencies needed (to be added to `pyproject.toml` in a shared-file PR): `nump
 | Returns the shared `EvidenceBundle` contract | `test_contract_boundary.py` |
 | Comparable benchmark metrics for all three | `scripts/benchmark_retrieval.py` (same queries, same user, same metrics) |
 
-## 7. Limitations (for Elpida's limitations section)
+## 7. Limitations (for the project's limitations section)
 
 - Fact extraction uses regular expressions tuned to the supplied document formats; a new contract
   template would need new patterns.
