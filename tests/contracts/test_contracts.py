@@ -8,9 +8,13 @@ from pydantic import ValidationError
 
 from supplyguard.contracts import (
     ApprovalRequest,
+    CalculationTrace,
     ConfirmedIncident,
     ContractModel,
+    CoveragePosition,
     InventoryPosition,
+    LatePenaltyCostInput,
+    OpenPurchaseOrder,
     RecoveryAction,
     RecoveryActionType,
     SourceReference,
@@ -88,3 +92,58 @@ def test_inventory_contract_enforces_deterministic_usable_stock() -> None:
             quarantined=100,
             usable=700,
         )
+
+
+def test_operational_contracts_explain_location_coverage_and_calculations() -> None:
+    source = SourceReference(
+        source_id="structured/inventory.csv",
+        source_type="structured",
+        record_id="MC-17@W-KAT",
+    )
+    coverage = CoveragePosition(
+        factory_id="F2",
+        location_id="W-KAT",
+        usable_units=600,
+        daily_demand_units=Decimal("150"),
+        days_of_cover=Decimal("4.0"),
+        projected_stockout_date=date(2026, 10, 23),
+        sources=(source,),
+    )
+    trace = CalculationTrace(
+        calculation="usable_stock",
+        formula="on_hand - reserved - quarantined",
+        inputs={"on_hand": 5200, "reserved": 1400, "quarantined": 600},
+        result=3200,
+        unit="units",
+        sources=(source,),
+    )
+
+    assert coverage.days_of_cover == Decimal("4.0")
+    assert trace.result == 3200
+
+
+def test_open_purchase_order_preserves_expedite_terms() -> None:
+    purchase_order = OpenPurchaseOrder(
+        po_id="PO-2026-9002",
+        supplier_id="S004",
+        component_id="MC-17",
+        quantity=1500,
+        unit_price_eur=Decimal("9.8"),
+        promised_date=date(2026, 11, 2),
+        status="open",
+        expedite_allowed=True,
+        expedite_fee_percentage=Decimal("6"),
+        expedite_days_gain=7,
+    )
+
+    assert purchase_order.expedite_fee_percentage == Decimal("6")
+
+
+def test_late_penalty_input_uses_percentage_points() -> None:
+    cost_input = LatePenaltyCostInput(
+        revenue_eur=Decimal("1000"),
+        delay_days=8,
+        weekly_rate_percentage=Decimal("2"),
+    )
+
+    assert cost_input.cap_weeks == 5

@@ -1,5 +1,6 @@
 """Stable cross-component contracts for SupplyGuard AI."""
 
+from supplyguard.contracts.application import AuthorizationContext, CaseStatus, CaseSummary
 from supplyguard.contracts.common import (
     ContractModel,
     DataQualityWarning,
@@ -11,10 +12,14 @@ from supplyguard.contracts.events import EvaluationResult, EvaluationStatus, UIE
 from supplyguard.contracts.evidence import EvidenceBundle, EvidenceConflict, EvidenceItem
 from supplyguard.contracts.impact import (
     AtRiskOrder,
+    CalculationTrace,
+    CoveragePosition,
     DependencyFinding,
     DependencyReport,
     ImpactReport,
     InventoryPosition,
+    LatePenaltyCostInput,
+    OpenPurchaseOrder,
     OperationalIntelligenceResult,
     RiskEvidence,
     SupplierCapability,
@@ -35,8 +40,13 @@ __all__ = [
     "ApprovalDecision",
     "ApprovalRequest",
     "AtRiskOrder",
+    "AuthorizationContext",
+    "CalculationTrace",
+    "CaseStatus",
+    "CaseSummary",
     "ConfirmedIncident",
     "ContractModel",
+    "CoveragePosition",
     "DataQualityWarning",
     "DependencyFinding",
     "DependencyReport",
@@ -50,6 +60,8 @@ __all__ = [
     "ImpactReport",
     "IncidentInput",
     "InventoryPosition",
+    "LatePenaltyCostInput",
+    "OpenPurchaseOrder",
     "OperationalIntelligenceResult",
     "RecoveryAction",
     "RecoveryActionType",
