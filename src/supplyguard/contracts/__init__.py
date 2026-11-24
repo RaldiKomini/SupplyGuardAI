@@ -12,6 +12,8 @@ from supplyguard.contracts.events import EvaluationResult, EvaluationStatus, UIE
 from supplyguard.contracts.evidence import EvidenceBundle, EvidenceConflict, EvidenceItem
 from supplyguard.contracts.impact import (
     AtRiskOrder,
+    CalculationTrace,
+    CoveragePosition,
     DependencyFinding,
     DependencyReport,
     ImpactReport,
@@ -37,10 +39,12 @@ __all__ = [
     "ApprovalRequest",
     "AtRiskOrder",
     "AuthorizationContext",
+    "CalculationTrace",
     "CaseStatus",
     "CaseSummary",
     "ConfirmedIncident",
     "ContractModel",
+    "CoveragePosition",
     "DataQualityWarning",
     "DependencyFinding",
     "DependencyReport",
