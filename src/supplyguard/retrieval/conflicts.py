@@ -104,7 +104,11 @@ def extract_facts(chunk: DocumentChunk, as_of: date = date(2026, 10, 19)) -> lis
 
 
 def resolve(facts: list[Fact]) -> tuple[dict[str, Fact], list[Conflict]]:
-    """For each fact name pick the planning value from the best source; report disagreements."""
+    """For each fact name pick the planning value from the best source; report disagreements.
+
+    A superseded source is never a planning value, even when it is the only source: it stays
+    visible as evidence (and as an 'ignore: superseded' alternative), but the planning value
+    is left unset, so nobody plans on terms that are no longer in force."""
     by_name: dict[str, list[Fact]] = defaultdict(list)
     for f in facts:
         by_name[f.name].append(f)
@@ -112,8 +116,10 @@ def resolve(facts: list[Fact]) -> tuple[dict[str, Fact], list[Conflict]]:
     planning: dict[str, Fact] = {}
     conflicts: list[Conflict] = []
     for name, group in by_name.items():
-        group.sort(key=lambda f: precedence_key(f.citation))
+        group.sort(key=lambda f: precedence_key(f.citation))  # current sources first
         best = group[0]
+        if best.citation.status == "superseded":
+            continue  # only superseded sources: no planning value
         planning[name] = best
         others = [f for f in group[1:] if f.value != best.value]
         if not others:

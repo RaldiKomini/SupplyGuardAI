@@ -72,15 +72,17 @@ def clean_metadata(
     return cleaned, findings
 
 
+# Plain ASCII digits only. str.isdigit() is not enough: it accepts characters such as
+# "²" or "٣" that int() rejects or reads differently, and this check must never raise.
+ASCII_VERSION = re.compile(r"[0-9]{1,6}")
+
+
 def is_valid_version(value) -> bool:
-    """True for 1, 2, 3 ... or "1", "2", "3" ... and False for anything else."""
+    """True for 1, 2, 3 ... or "1", "2", "3" ... and False for anything else. Never raises."""
     text = str(value).strip()
-    return text.isdigit() and int(text) >= 1
+    return bool(ASCII_VERSION.fullmatch(text)) and int(text) >= 1
 
 
 def safe_version(value) -> int:
-    """Version numbers must be positive integers; anything else counts as version 1."""
-    try:
-        return max(int(value), 1)
-    except (TypeError, ValueError):
-        return 1
+    """The version as a number; anything that is not a valid version counts as 1. Never raises."""
+    return int(str(value).strip()) if is_valid_version(value) else 1
