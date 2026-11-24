@@ -1,0 +1,43 @@
+# Roles, scopes, and demo users. Passwords are never stored here; each user names the
+# environment variable that holds their password.
+# Scope names are provisional until confirmed with the retrieval owner.
+
+[roles.viewer]
+scopes = ["public"]
+
+[roles.operations_analyst]
+scopes = ["public", "operations"]
+
+[roles.procurement_manager]
+scopes = ["public", "operations", "contracts", "procurement"]
+
+[roles.finance_controller]
+scopes = ["public", "operations", "contracts", "finance_confidential"]
+
+[[users]]
+id = "u-view-01"
+display_name = "Viewer"
+role = "viewer"
+factory_ids = ["F-01"]
+password_env = "AUTH_PASSWORD_U_VIEW_01"
+
+[[users]]
+id = "u-ops-01"
+display_name = "Operations Analyst"
+role = "operations_analyst"
+factory_ids = ["F-01", "F-02"]
+password_env = "AUTH_PASSWORD_U_OPS_01"
+
+[[users]]
+id = "u-pm-01"
+display_name = "Procurement Manager"
+role = "procurement_manager"
+factory_ids = ["F-01", "F-02"]
+password_env = "AUTH_PASSWORD_U_PM_01"
+
+[[users]]
+id = "u-fin-01"
+display_name = "Finance Controller"
+role = "finance_controller"
+factory_ids = ["F-01", "F-02"]
+password_env = "AUTH_PASSWORD_U_FIN_01"

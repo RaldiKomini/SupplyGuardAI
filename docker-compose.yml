@@ -52,7 +52,6 @@ services:
       timeout: 5s
       retries: 20
 
-  # Owned by the application layer; requires src/supplyguard/app, which does not exist yet.
   app:
     profiles: ["app"]
     build: .
@@ -73,6 +72,11 @@ services:
       LANGSMITH_TRACING: ${LANGSMITH_TRACING:-false}
       LANGSMITH_API_KEY: ${LANGSMITH_API_KEY:-}
       LANGSMITH_PROJECT: ${LANGSMITH_PROJECT:-supplyguard-ai}
+      CHAINLIT_AUTH_SECRET: ${CHAINLIT_AUTH_SECRET:?set CHAINLIT_AUTH_SECRET in .env}
+      AUTH_PASSWORD_U_VIEW_01: ${AUTH_PASSWORD_U_VIEW_01:-}
+      AUTH_PASSWORD_U_OPS_01: ${AUTH_PASSWORD_U_OPS_01:-}
+      AUTH_PASSWORD_U_PM_01: ${AUTH_PASSWORD_U_PM_01:-}
+      AUTH_PASSWORD_U_FIN_01: ${AUTH_PASSWORD_U_FIN_01:-}
     ports:
       - "127.0.0.1:8000:8000"
     depends_on:
