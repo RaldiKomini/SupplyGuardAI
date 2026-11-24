@@ -53,6 +53,23 @@ def supplier_question(query: str | None, options: tuple[SupplierCandidate, ...])
     return "Which supplier announced the disruption?"
 
 
+def link_question(
+    supplier: SupplierCandidate,
+    component: ComponentCandidate,
+    suppliers_of_component: tuple[SupplierCandidate, ...],
+) -> str:
+    """Both exist, but master data has no supply link between them: never treat the pair as
+    verified."""
+    text = (
+        f"Our records don't list {supplier.name} ({supplier.supplier_id}) "
+        f"as a supplier of {component.component_id}."
+    )
+    if suppliers_of_component:
+        names = [f"{s.name} ({s.supplier_id})" for s in suppliers_of_component]
+        return f"{text} It is supplied by {_choices(names)}. Which supplier is it?"
+    return f"{text} Which supplier is it?"
+
+
 def component_question(query: str | None, options: tuple[ComponentCandidate, ...]) -> str:
     if query and options:
         names = [f"{c.component_id} ({c.description})" for c in options]

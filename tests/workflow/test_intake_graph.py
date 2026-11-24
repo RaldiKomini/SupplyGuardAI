@@ -2,6 +2,7 @@
 
 import asyncio
 
+import pytest
 from langgraph.checkpoint.memory import InMemorySaver
 from langgraph.types import Command
 
@@ -79,3 +80,38 @@ def test_unknown_supplier_is_asked_with_the_component_suppliers(master_data) -> 
 
     assert supplier is None and component.component_id == "MC-17"
     assert questions[0].startswith("Which supplier is affected? This component is supplied by")
+
+
+def test_graph_cannot_be_built_without_a_checkpointer(master_data, scripted_model) -> None:
+    """Without a checkpointer an answered question could not resume the case."""
+    with pytest.raises(TypeError):
+        build_graph(model=scripted_model(GOLDEN), master_data=master_data)  # type: ignore[call-arg]
+    with pytest.raises(ValueError, match="checkpointer"):
+        build_graph(model=scripted_model(GOLDEN), master_data=master_data, checkpointer=None)
+
+
+def test_supplier_not_linked_to_the_component_is_asked_not_accepted(master_data) -> None:
+    """S006 and MC-17 both exist, but S006 does not supply MC-17 in the supplied data."""
+    extraction = IncidentExtraction(
+        supplier_query="Atlas Logistik GmbH", component_query="MC-17", delay_days=12
+    )
+
+    supplier, component, questions = asyncio.run(resolve(extraction, master_data))
+
+    assert supplier is None and component.component_id == "MC-17"
+    assert questions[0].startswith(
+        "Our records don't list Atlas Logistik GmbH (S006) as a supplier of MC-17."
+    )
+    assert "Atlas Components (S001)" in questions[0]  # the real suppliers are offered
+
+
+def test_unlinked_pair_pauses_the_graph_instead_of_confirming(master_data, scripted_model) -> None:
+    unlinked = IncidentExtraction(supplier_query="S006", component_query="MC-17", delay_days=12)
+    graph = build_graph(
+        model=scripted_model(unlinked), master_data=master_data, checkpointer=InMemorySaver()
+    )
+
+    _, result = start(graph, "S006 says MC-17 is 12 days late.")
+
+    assert "incident" not in result
+    assert result["__interrupt__"][0].value["type"] == "clarification"

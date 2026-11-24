@@ -12,6 +12,7 @@ from supplyguard.workflow.intake.rules import (
     MAX_CLARIFICATION_ROUNDS,
     clarification_message,
     component_question,
+    link_question,
     pick_component,
     pick_supplier,
     supplier_question,
@@ -43,6 +44,12 @@ async def resolve(
     else:
         options = await master_data.suppliers_of(component.component_id) if component else ()
         supplier_ask = supplier_question(None, options)
+
+    if supplier and component:
+        linked = await master_data.suppliers_of(component.component_id)
+        if supplier.supplier_id not in {s.supplier_id for s in linked}:
+            supplier_ask = link_question(supplier, component, linked)
+            supplier = None  # not verified, so not usable
 
     delay_ask = DELAY_QUESTION if extraction.delay_days is None else None
     questions = [q for q in (supplier_ask, component_ask, delay_ask) if q]
