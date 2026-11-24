@@ -1,0 +1,19 @@
+FROM python:3.13-slim
+
+COPY --from=ghcr.io/astral-sh/uv:0.8 /uv /usr/local/bin/uv
+
+ENV UV_COMPILE_BYTECODE=1 UV_LINK_MODE=copy PYTHONUNBUFFERED=1
+WORKDIR /app
+
+COPY pyproject.toml uv.lock README.md ./
+COPY src ./src
+RUN uv sync --frozen --no-dev
+
+RUN useradd --system --create-home appuser
+USER appuser
+
+ENV PATH="/app/.venv/bin:$PATH"
+EXPOSE 8000
+HEALTHCHECK --interval=10s --timeout=5s --retries=10 --start-period=20s \
+  CMD python -c "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/', timeout=3)"
+CMD ["chainlit", "run", "src/supplyguard/app/chainlit_app.py", "--host", "0.0.0.0", "--port", "8000", "--headless"]
