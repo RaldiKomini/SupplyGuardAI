@@ -23,6 +23,7 @@ from supplyguard.contracts.incident import ConfirmedIncident, IncidentInput
 from supplyguard.contracts.planning import (
     ApprovalDecision,
     ApprovalRequest,
+    ChallengeFinding,
     ExecutionResult,
     ExecutionStatus,
     RecoveryAction,
@@ -35,6 +36,7 @@ __all__ = [
     "ApprovalDecision",
     "ApprovalRequest",
     "AtRiskOrder",
+    "ChallengeFinding",
     "ConfirmedIncident",
     "ContractModel",
     "DataQualityWarning",

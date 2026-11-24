@@ -7,7 +7,7 @@ from typing import Any
 
 from pydantic import AwareDatetime, Field, model_validator
 
-from supplyguard.contracts.common import ContractModel, SourceReference
+from supplyguard.contracts.common import ContractModel, Severity, SourceReference
 
 
 class RecoveryActionType(StrEnum):
@@ -40,12 +40,28 @@ class RecoveryOption(ContractModel):
     sources: tuple[SourceReference, ...] = ()
 
 
+class ChallengeFinding(ContractModel):
+    """One problem the recommendation challenger found in a plan."""
+
+    check: str = Field(min_length=1)
+    message: str = Field(min_length=1)
+    severity: Severity
+    option_id: str | None = None
+    sources: tuple[SourceReference, ...] = ()
+
+
 class RecoveryPlan(ContractModel):
     case_id: str
     options: tuple[RecoveryOption, ...]
     recommended_option_id: str
     recommendation_reason: str
     residual_risks: tuple[str, ...] = ()
+    challenge_findings: tuple[ChallengeFinding, ...] = ()
+
+    @property
+    def needs_revision(self) -> bool:
+        """True when the challenger found at least one blocking problem."""
+        return any(f.severity == Severity.BLOCKING for f in self.challenge_findings)
 
     @model_validator(mode="after")
     def recommended_option_exists(self) -> "RecoveryPlan":
@@ -74,6 +90,7 @@ class ApprovalDecision(ContractModel):
     payload_hash: str
     approved: bool
     approver_user_ids: tuple[str, ...]
+    approver_roles: tuple[str, ...] = ()
     decided_at: AwareDatetime
     reason: str | None = None
 
@@ -81,6 +98,8 @@ class ApprovalDecision(ContractModel):
     def approved_decision_has_approver(self) -> "ApprovalDecision":
         if self.approved and not self.approver_user_ids:
             raise ValueError("an approved decision requires at least one approver")
+        if self.approved and len(self.approver_roles) != len(self.approver_user_ids):
+            raise ValueError("every approver needs exactly one role")
         return self
 
 
@@ -93,6 +112,9 @@ class ExecutionStatus(StrEnum):
 
 class ExecutionResult(ContractModel):
     case_id: str
+    approval_request_id: str
+    action_id: str
+    action_type: RecoveryActionType
     idempotency_key: str
     status: ExecutionStatus
     message: str
