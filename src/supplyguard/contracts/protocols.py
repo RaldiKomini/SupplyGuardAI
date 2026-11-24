@@ -6,7 +6,12 @@ from typing import Protocol
 from supplyguard.contracts.application import AuthorizationContext, CaseSummary
 from supplyguard.contracts.events import UIEvent
 from supplyguard.contracts.evidence import EvidenceBundle
-from supplyguard.contracts.impact import OperationalIntelligenceResult
+from supplyguard.contracts.impact import (
+    CalculationTrace,
+    LatePenaltyCostInput,
+    OpenPurchaseOrder,
+    OperationalIntelligenceResult,
+)
 from supplyguard.contracts.incident import ConfirmedIncident, IncidentInput
 from supplyguard.contracts.planning import (
     ApprovalDecision,
@@ -43,6 +48,12 @@ class CaseWorkflowService(Protocol):
 
 class OperationalIntelligenceService(Protocol):
     async def investigate(self, incident: ConfirmedIncident) -> OperationalIntelligenceResult: ...
+
+
+class OperationalCostService(Protocol):
+    def estimate_expedite(self, purchase_order: OpenPurchaseOrder) -> CalculationTrace: ...
+
+    def estimate_late_penalty(self, cost_input: LatePenaltyCostInput) -> CalculationTrace: ...
 
 
 class EvidenceService(Protocol):
