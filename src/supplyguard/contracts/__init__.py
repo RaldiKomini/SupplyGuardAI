@@ -1,5 +1,6 @@
 """Stable cross-component contracts for SupplyGuard AI."""
 
+from supplyguard.contracts.application import AuthorizationContext, CaseStatus, CaseSummary
 from supplyguard.contracts.common import (
     ContractModel,
     DataQualityWarning,
@@ -37,7 +38,10 @@ __all__ = [
     "ApprovalDecision",
     "ApprovalRequest",
     "AtRiskOrder",
+    "AuthorizationContext",
     "CalculationTrace",
+    "CaseStatus",
+    "CaseSummary",
     "ConfirmedIncident",
     "ContractModel",
     "CoveragePosition",

@@ -39,5 +39,11 @@ IncidentInput
 | Evidence, conflicts, and content security | George |
 | Options, approval, and execution | Athanasia |
 | UI and evaluation events | Elpida |
+| Authorization context and case listing | Elpida |
+| Workflow entry points (`CaseWorkflowService`) | Elena implements, Elpida consumes |
+
+## Authorization
+
+The application layer authenticates the user and builds an immutable `AuthorizationContext` (user, role, factories, allowed scopes). It is passed unchanged to the workflow and to `EvidenceService.retrieve`. An empty `allowed_scopes` means no document access. Components must not widen or derive scopes themselves, and `CaseWorkflowService` implementations must reject cases owned by another user.
 
 Changes follow the contract-change procedure in `COLLABORATION.md`.
