@@ -33,6 +33,12 @@ def registry() -> AccessRegistry:
             ("finance-confidential", *BASE_SCOPES),
             ("F1", "F2", "F3"),
         ),
+        (
+            "u-fd-01",
+            "finance_director",
+            ("finance-confidential", *BASE_SCOPES),
+            ("F1", "F2", "F3"),
+        ),
         ("u-ro-01", "viewer", ("public",), ()),
     ],
 )
@@ -51,12 +57,12 @@ def test_each_user_receives_role_scopes_and_factories(
     assert context.factory_ids == factories
 
 
-def test_only_finance_controller_receives_finance_confidential(registry: AccessRegistry) -> None:
+def test_only_finance_roles_receive_finance_confidential(registry: AccessRegistry) -> None:
     for user in load_access_config(CONFIG_PATH).users:
         context = registry.authorization_for(user.id)
         assert context is not None
         has_scope = "finance-confidential" in context.allowed_scopes
-        assert has_scope == (user.role == "finance_controller")
+        assert has_scope == (user.role in {"finance_controller", "finance_director"})
 
 
 def test_access_config_matches_the_supplied_users_csv(registry: AccessRegistry) -> None:
@@ -64,7 +70,7 @@ def test_access_config_matches_the_supplied_users_csv(registry: AccessRegistry) 
         rows = list(csv.DictReader(handle))
     config = load_access_config(CONFIG_PATH)
 
-    assert {user.id for user in config.users} == {row["user_id"] for row in rows}
+    assert {user.id for user in config.users} == {row["user_id"] for row in rows} | {"u-fd-01"}
     for row in rows:
         context = registry.authorization_for(row["user_id"])
         assert context is not None
