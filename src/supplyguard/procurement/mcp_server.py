@@ -26,7 +26,7 @@ server = FastMCP(
         "execute_approved_request runs only actions with a matching approval, once each."
     ),
     host=os.getenv("PROCUREMENT_MCP_HOST", "127.0.0.1"),
-    port=int(os.getenv("PROCUREMENT_MCP_PORT", "8102")),
+    port=int(os.getenv("PROCUREMENT_MCP_PORT", "8100")),
 )
 
 _database: Database | None = None
