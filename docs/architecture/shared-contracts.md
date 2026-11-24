@@ -62,11 +62,12 @@ them to the approval service for revalidation and a new approval request.
 
 ## Authorization
 
-The application layer authenticates the user and builds an immutable `AuthorizationContext` (user, role, factories, allowed scopes). It is passed unchanged to the workflow and to `EvidenceService.retrieve`. An empty `allowed_scopes` means no document access. Components must not widen or derive scopes themselves, and `CaseWorkflowService` implementations must reject cases owned by another user.
+The application layer authenticates the user and builds an immutable `AuthorizationContext` (user, role, factories, allowed scopes). It is passed unchanged to the workflow and to `EvidenceService.retrieve`. An empty `allowed_scopes` means no document access. Components must not widen or derive scopes themselves, and `CaseWorkflowService` implementations must reject cases owned by another user, with one exception: `submit_approval` also accepts an authorized approver (see below).
 
 ## Approval and execution
 
 - `ApprovalDecision` records one role per approver. An approval tier that requires two people (for example procurement manager and finance controller above EUR 25,000) must be satisfied by two distinct authenticated users. One user holding two roles does not count twice.
+- Case access stays owner-only, but an approver does not need to own the case. `CaseWorkflowService.submit_approval` accepts a decision from a user whose role is in the pending request's `required_approver_roles`, when the request belongs to the decision's case and the `payload_hash` matches. Each approver submits only their own decision, naming only themselves and their own role. The application layer enforces this before calling the workflow; the workflow must not reject such a decision for ownership. Approvers get no other access to the case.
 - A decision applies only to the `payload_hash` it names. Changing supplier, quantity, price, or conditions goes through `ApprovalService.revalidate`, which returns a new `ApprovalRequest` with a new hash and `payload_version`. Earlier decisions never carry over.
 - `ProcurementExecutionService.execute` returns `tuple[ExecutionResult, ...]`, one result per action. Workflow and UI callers must handle several results, including partial failure. Each result carries `approval_request_id`, `action_id`, `action_type`, and `idempotency_key`.
 - Recovery plans carry `challenge_findings`; `RecoveryPlan.needs_revision` is true when any finding is blocking.
