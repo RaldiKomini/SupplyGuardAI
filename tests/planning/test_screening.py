@@ -100,3 +100,14 @@ def test_invalid_cordillera_quantities_are_rejected(quantity: int, expected_frag
 
 def test_cordillera_reference_quantity_is_accepted() -> None:
     assert validate_order_quantity(CORDILLERA, 3000) == ()
+
+
+def test_minimum_order_above_capacity_is_rejected() -> None:
+    tiny = _capability("S009", price="9.0", lead_time=5, capacity=200, moq=250, upstream="U09")
+
+    screening = screen_supplier(
+        tiny, latest_useful_arrival_day=LATEST_USEFUL_DAY, disrupted_upstream_id=ATLAS_UPSTREAM
+    )
+
+    assert not screening.feasible
+    assert any("minimum order 250" in r for r in screening.rejection_reasons)

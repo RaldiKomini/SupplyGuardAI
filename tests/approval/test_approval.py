@@ -1,10 +1,12 @@
 """Exact-payload approval against the MC-17 reference plan (golden_scenario.json)."""
 
+from dataclasses import replace
 from datetime import UTC, date, datetime
 from decimal import Decimal
 from pathlib import Path
 
 import pytest
+from planning.golden import IMPACT, INCIDENT
 
 from supplyguard.approval.hashing import payload_hash
 from supplyguard.approval.policy import load_approval_policy, required_approver_roles
@@ -13,15 +15,24 @@ from supplyguard.approval.requests import (
     decision_problems,
     revalidate_request,
 )
+from supplyguard.approval.revalidation import RevalidationError
+from supplyguard.calculations.service import DeterministicCostService
 from supplyguard.contracts import (
     ApprovalDecision,
     RecoveryAction,
     RecoveryActionType,
     RecoveryOption,
 )
+from supplyguard.planning.options import PlanningInputs
 
 POLICY = load_approval_policy(
     Path(__file__).parents[2] / "support-data" / "config" / "policies.json"
+)
+INPUTS = PlanningInputs(
+    incident=INCIDENT,
+    impact=IMPACT,
+    costs=DeterministicCostService(),
+    transfer_cost_eur_per_unit=Decimal("0.12"),
 )
 NOW = datetime(2026, 10, 19, 12, 0, tzinfo=UTC)
 
@@ -134,21 +145,59 @@ def test_rejection_authorises_nothing() -> None:
     assert decision_problems(request, decision)
 
 
-def test_modified_quantity_needs_new_approval() -> None:
+def test_valid_edit_is_repriced_and_needs_new_approval() -> None:
     request = _request()
     old_decision = _decision(
         request,
         user_ids=("u-pm-01", "u-fc-01"),
         roles=("procurement_manager", "finance_controller"),
     )
+    # The stated cost is wrong on purpose: revalidation must price the edit again.
+    two_thousand = PURCHASE.model_copy(
+        update={"payload": {**PURCHASE.payload, "qty": 2000}, "cost_eur": Decimal("1.00")}
+    )
+
+    new_request = revalidate_request(
+        request,
+        (TRANSFER, EXPEDITE, two_thousand),
+        inputs=INPUTS,
+        policy=POLICY,
+        requested_at=NOW,
+    )
+
+    assert new_request.payload_version == 2
+    assert new_request.actions[2].cost_eur == Decimal("19600.00")
+    assert new_request.total_cost_eur == Decimal("20578.00")
+    assert new_request.required_approver_roles == ("procurement_manager",)
+    assert new_request.payload_hash != request.payload_hash
+    assert decision_problems(new_request, old_decision)
+
+
+def test_edit_above_supplier_capacity_is_rejected() -> None:
     six_thousand = PURCHASE.model_copy(
         update={"payload": {**PURCHASE.payload, "qty": 6000}, "cost_eur": Decimal("58800.00")}
     )
 
-    new_request = revalidate_request(
-        request, (TRANSFER, EXPEDITE, six_thousand), policy=POLICY, requested_at=NOW
+    with pytest.raises(RevalidationError, match="exceeds monthly capacity 3000"):
+        revalidate_request(
+            _request(),
+            (TRANSFER, EXPEDITE, six_thousand),
+            inputs=INPUTS,
+            policy=POLICY,
+            requested_at=NOW,
+        )
+
+
+def test_edit_above_spending_cap_is_rejected() -> None:
+    low_cap = replace(
+        INPUTS, incident=INCIDENT.model_copy(update={"spending_cap_eur": Decimal("20000")})
     )
 
-    assert new_request.payload_version == 2
-    assert new_request.payload_hash != request.payload_hash
-    assert decision_problems(new_request, old_decision)
+    with pytest.raises(RevalidationError, match="spending cap"):
+        revalidate_request(
+            _request(),
+            (TRANSFER, EXPEDITE, PURCHASE),
+            inputs=low_cap,
+            policy=POLICY,
+            requested_at=NOW,
+        )

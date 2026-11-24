@@ -5,12 +5,14 @@ from decimal import Decimal
 
 from supplyguard.approval.hashing import payload_hash
 from supplyguard.approval.policy import ApprovalPolicy, required_approver_roles
+from supplyguard.approval.revalidation import RevalidationError, reprice_actions
 from supplyguard.contracts import (
     ApprovalDecision,
     ApprovalRequest,
     RecoveryAction,
     RecoveryOption,
 )
+from supplyguard.planning.options import PlanningInputs
 
 
 def build_approval_request(
@@ -37,14 +39,22 @@ def revalidate_request(
     request: ApprovalRequest,
     modified_actions: tuple[RecoveryAction, ...],
     *,
+    inputs: PlanningInputs,
     policy: ApprovalPolicy,
     requested_at: datetime,
 ) -> ApprovalRequest:
-    """A modified payload always becomes a new request that needs a fresh decision."""
+    """Check and re-price a modified payload; it becomes a new request needing a fresh decision.
+
+    Raises RevalidationError when an edited action breaks a rule (capacity, certification,
+    stock, spending cap). Stated costs are ignored: every action is priced again.
+    """
+    actions, problems = reprice_actions(modified_actions, inputs)
+    if problems:
+        raise RevalidationError(problems)
     return _request(
         case_id=request.case_id,
         option_id=request.option_id,
-        actions=modified_actions,
+        actions=actions,
         evidence_source_ids=request.evidence_source_ids,
         policy=policy,
         requested_at=requested_at,

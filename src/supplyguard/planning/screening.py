@@ -52,6 +52,11 @@ def screen_supplier(
         )
     if capability.monthly_capacity_units == 0:
         reasons.append("no available monthly capacity")
+    elif capability.minimum_order_units > capability.monthly_capacity_units:
+        reasons.append(
+            f"minimum order {capability.minimum_order_units} exceeds monthly capacity "
+            f"{capability.monthly_capacity_units}"
+        )
     if (
         disrupted_upstream_id is not None
         and capability.upstream_manufacturer_id == disrupted_upstream_id

@@ -5,6 +5,7 @@ This module only combines them, checks the rules, and explains each verdict.
 """
 
 from dataclasses import dataclass
+from datetime import date
 from decimal import Decimal
 
 from supplyguard.contracts import (
@@ -21,7 +22,11 @@ from supplyguard.contracts import (
     TransferCostInput,
 )
 from supplyguard.contracts.protocols import OperationalCostService
-from supplyguard.planning.screening import SupplierScreening, screen_supplier
+from supplyguard.planning.screening import (
+    SupplierScreening,
+    screen_supplier,
+    validate_order_quantity,
+)
 
 REVENUE_NOTE = (
     "Revenue at risk is the case exposure before recovery; it is reported "
@@ -35,12 +40,34 @@ class PlanningInputs:
     impact: ImpactReport
     costs: OperationalCostService
     transfer_cost_eur_per_unit: Decimal
+    # The user's answer when no open purchase order shows when the delayed delivery arrives.
+    expected_arrival_date: date | None = None
+
+
+def missing_planning_data(inputs: PlanningInputs) -> tuple[str, ...]:
+    """What the workflow must ask the user before options can be compared (empty if nothing)."""
+    if _delayed_arrival_day(inputs) is None:
+        return (
+            f"expected arrival date of the delayed delivery from {inputs.incident.supplier_id}: "
+            "no open purchase order was found",
+        )
+    return ()
 
 
 def build_recovery_plan(inputs: PlanningInputs) -> RecoveryPlan:
-    """Compare single strategies and their combinations, then recommend one."""
+    """Compare single strategies and their combinations, then recommend one.
+
+    When required data is missing, the plan has no options and the reason names what to ask.
+    """
     incident, impact = inputs.incident, inputs.impact
-    useful_day = _delayed_arrival_day(incident, impact)
+    useful_day = _delayed_arrival_day(inputs)
+    if useful_day is None:
+        return RecoveryPlan(
+            case_id=incident.case_id,
+            options=(),
+            recommended_option_id=None,
+            recommendation_reason="Missing data: " + "; ".join(missing_planning_data(inputs)),
+        )
     disrupted_upstream = _upstream_of(incident.supplier_id, impact.supplier_capabilities)
     screenings = {
         capability.supplier_id: (
@@ -122,11 +149,16 @@ def build_recovery_plan(inputs: PlanningInputs) -> RecoveryPlan:
     )
 
 
-def _delayed_arrival_day(incident: ConfirmedIncident, impact: ImpactReport) -> int:
-    """Days from the scenario date until the disrupted delivery now arrives."""
-    orders = [po for po in impact.open_purchase_orders if po.supplier_id == incident.supplier_id]
+def _delayed_arrival_day(inputs: PlanningInputs) -> int | None:
+    """Days from the scenario date until the disrupted delivery now arrives (None if unknown)."""
+    incident = inputs.incident
+    if inputs.expected_arrival_date is not None:
+        return (inputs.expected_arrival_date - incident.scenario_date).days
+    orders = [
+        po for po in inputs.impact.open_purchase_orders if po.supplier_id == incident.supplier_id
+    ]
     if not orders:
-        raise ValueError(f"no open purchase order from {incident.supplier_id}")
+        return None
     original = min(po.promised_date for po in orders)
     return (original - incident.scenario_date).days + incident.delay_days
 
@@ -217,6 +249,8 @@ def _purchase_actions(
         if needed <= 0:
             break
         quantity = max(min(needed, screening.max_units), capability.minimum_order_units)
+        if validate_order_quantity(capability, quantity):
+            continue
         trace = inputs.costs.estimate_purchase(
             PurchaseCostInput(
                 quantity=quantity,
