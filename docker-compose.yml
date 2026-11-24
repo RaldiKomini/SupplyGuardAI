@@ -1,8 +1,9 @@
 name: supplyguard
 
-# Start infrastructure:  docker compose --env-file .env.example up -d --wait
-# Start everything:      docker compose --env-file .env.example --profile app up --build -d --wait
-# Secrets have no defaults; copy .env.example to .env and replace every "change-me" value.
+# Start infrastructure:  docker compose up -d --wait
+# Start everything:      docker compose --profile app up --build -d --wait
+# Copy .env.example to .env first. Database and account secrets have no defaults. The app
+# refuses to start without CHAINLIT_AUTH_SECRET, and accounts with an empty password cannot sign in.
 
 x-postgres-password: &postgres_password ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}
 x-neo4j-password: &neo4j_password ${NEO4J_PASSWORD:?set NEO4J_PASSWORD in .env}
@@ -72,9 +73,8 @@ services:
       LANGSMITH_TRACING: ${LANGSMITH_TRACING:-false}
       LANGSMITH_API_KEY: ${LANGSMITH_API_KEY:-}
       LANGSMITH_PROJECT: ${LANGSMITH_PROJECT:-supplyguard-ai}
-      CHAINLIT_AUTH_SECRET: ${CHAINLIT_AUTH_SECRET:?set CHAINLIT_AUTH_SECRET in .env}
-      AUTH_PASSWORD_U_VIEW_01: ${AUTH_PASSWORD_U_VIEW_01:-}
-      AUTH_PASSWORD_U_OPS_01: ${AUTH_PASSWORD_U_OPS_01:-}
+      CHAINLIT_AUTH_SECRET: ${CHAINLIT_AUTH_SECRET:-}
+      AUTH_PASSWORD_U_RO_01: ${AUTH_PASSWORD_U_RO_01:-}
       AUTH_PASSWORD_U_PM_01: ${AUTH_PASSWORD_U_PM_01:-}
       AUTH_PASSWORD_U_FIN_01: ${AUTH_PASSWORD_U_FIN_01:-}
     ports:

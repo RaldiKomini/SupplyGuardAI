@@ -1,5 +1,6 @@
 """Tests for authentication and role-to-scope mapping."""
 
+import re
 from pathlib import Path
 
 import pytest
@@ -7,10 +8,12 @@ from pydantic import ValidationError
 
 from supplyguard.auth import AccessRegistry, load_access_config
 
-CONFIG_PATH = Path(__file__).resolve().parents[2] / "config" / "access.toml"
+ROOT = Path(__file__).resolve().parents[2]
+CONFIG_PATH = ROOT / "config" / "access.toml"
+# Scope names the retrieval layer and the supplied data use.
+KNOWN_SCOPES = {"public", "internal", "procurement", "finance-confidential"}
 PASSWORDS = {
-    "AUTH_PASSWORD_U_VIEW_01": "pw-view",
-    "AUTH_PASSWORD_U_OPS_01": "pw-ops",
+    "AUTH_PASSWORD_U_RO_01": "pw-ro",
     "AUTH_PASSWORD_U_PM_01": "pw-pm",
     "AUTH_PASSWORD_U_FIN_01": "pw-fin",
 }
@@ -24,19 +27,18 @@ def registry() -> AccessRegistry:
 @pytest.mark.parametrize(
     ("user_id", "password", "role", "scopes"),
     [
-        ("u-view-01", "pw-view", "viewer", ("public",)),
-        ("u-ops-01", "pw-ops", "operations_analyst", ("operations", "public")),
+        ("u-ro-01", "pw-ro", "viewer", ("public",)),
         (
             "u-pm-01",
             "pw-pm",
             "procurement_manager",
-            ("contracts", "operations", "procurement", "public"),
+            ("internal", "procurement", "public"),
         ),
         (
             "u-fin-01",
             "pw-fin",
             "finance_controller",
-            ("contracts", "finance_confidential", "operations", "public"),
+            ("finance-confidential", "internal", "procurement", "public"),
         ),
     ],
 )
@@ -54,8 +56,28 @@ def test_only_finance_controller_receives_finance_confidential(registry: AccessR
     for user in load_access_config(CONFIG_PATH).users:
         context = registry.authorization_for(user.id)
         assert context is not None
-        has_scope = "finance_confidential" in context.allowed_scopes
+        has_scope = "finance-confidential" in context.allowed_scopes
         assert has_scope == (user.role == "finance_controller")
+
+
+def test_configured_scopes_and_factories_match_the_supplied_data_vocabulary() -> None:
+    config = load_access_config(CONFIG_PATH)
+
+    for role in config.roles.values():
+        assert set(role.scopes) <= KNOWN_SCOPES
+    for user in config.users:
+        assert all(re.fullmatch(r"F\d+", factory) for factory in user.factory_ids)
+
+
+def test_env_example_ships_no_credentials() -> None:
+    values = dict(
+        line.split("=", 1)
+        for line in (ROOT / ".env.example").read_text(encoding="utf-8").splitlines()
+        if re.match(r"(AUTH_PASSWORD_|CHAINLIT_AUTH_SECRET)", line)
+    )
+
+    assert values
+    assert all(value == "" for value in values.values())
 
 
 def test_wrong_password_is_rejected(registry: AccessRegistry) -> None:
@@ -79,10 +101,10 @@ def test_authorization_for_unknown_user_is_none(registry: AccessRegistry) -> Non
 
 
 def test_authorization_includes_factories(registry: AccessRegistry) -> None:
-    context = registry.authorization_for("u-view-01")
+    context = registry.authorization_for("u-pm-01")
 
     assert context is not None
-    assert context.factory_ids == ("F-01",)
+    assert context.factory_ids == ("F1", "F2", "F3")
 
 
 def test_committed_config_contains_no_credentials() -> None:

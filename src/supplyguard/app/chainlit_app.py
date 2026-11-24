@@ -2,7 +2,16 @@
 
 import chainlit as cl
 
-from supplyguard.auth import get_registry
+from supplyguard.auth import get_registry, require_auth_secret
+
+
+@cl.on_app_startup
+async def check_auth_secret() -> None:
+    try:
+        require_auth_secret()
+    except RuntimeError as error:
+        # Chainlit logs and swallows ordinary exceptions raised by startup hooks.
+        raise SystemExit(str(error)) from error
 
 
 @cl.data_layer
