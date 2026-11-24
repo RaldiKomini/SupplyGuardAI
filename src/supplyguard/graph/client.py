@@ -14,6 +14,7 @@ class DependencyContext:
     upstream_regions: tuple[str, ...]
     alternative_supplier_ids: tuple[str, ...]
     disconnected_entity_ids: tuple[str, ...]
+    shared_upstream_supplier_ids: tuple[str, ...] = ()
 
 
 IMPACT_PATH_QUERY = """
@@ -34,8 +35,12 @@ WITH supplier, collect(DISTINCT upstream.id) AS upstream_ids,
 OPTIONAL MATCH (supplier)-[:SUPPLIES]->(component:Component {id: $component_id})
 OPTIONAL MATCH (alternative:Supplier)-[:SUPPLIES]->(component)
 WHERE alternative.id <> supplier.id
+OPTIONAL MATCH (alternative)-[:SOURCES_FROM]->(shared:UpstreamManufacturer)
+               <-[:SOURCES_FROM]-(supplier)
 RETURN upstream_ids, upstream_regions,
-       collect(DISTINCT alternative.id) AS alternative_supplier_ids
+       collect(DISTINCT alternative.id) AS alternative_supplier_ids,
+       collect(DISTINCT CASE WHEN shared IS NOT NULL THEN alternative.id END)
+           AS shared_upstream_supplier_ids
 """
 
 DISCONNECTED_QUERY = """
@@ -77,6 +82,9 @@ class DependencyGraph:
             upstream_regions=tuple((supplier or {}).get("upstream_regions", ())),
             alternative_supplier_ids=tuple((supplier or {}).get("alternative_supplier_ids", ())),
             disconnected_entity_ids=tuple((disconnected or {}).get("disconnected_entity_ids", ())),
+            shared_upstream_supplier_ids=tuple(
+                sorted((supplier or {}).get("shared_upstream_supplier_ids", ()))
+            ),
         )
 
     async def close(self) -> None:

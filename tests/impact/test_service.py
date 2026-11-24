@@ -30,7 +30,7 @@ class FakeRepository:
     async def daily_demand_by_factory(self, component_id, start_date):
         return (FactoryDemandRow("FAC-1", Decimal(450)),)
 
-    async def open_orders(self, product_ids):
+    async def open_orders(self, product_ids, scenario_date):
         return (OrderRow("O-1", "C-1", "P-1", date(2025, 1, 10), 10, 1, Decimal("2500")),)
 
     async def supplier_capabilities(self, component_id):
