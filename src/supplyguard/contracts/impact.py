@@ -65,6 +65,22 @@ class OpenPurchaseOrder(ContractModel):
     sources: tuple[SourceReference, ...] = ()
 
 
+class PurchaseCostInput(ContractModel):
+    """Proposed purchase quantity and the unit price selected for the estimate."""
+
+    quantity: int = Field(ge=0, strict=True)
+    unit_price_eur: Decimal = Field(ge=0, allow_inf_nan=False)
+    sources: tuple[SourceReference, ...] = ()
+
+
+class TransferCostInput(ContractModel):
+    """Proposed transfer quantity and the rate from trusted policy."""
+
+    quantity: int = Field(ge=0, strict=True)
+    transfer_cost_eur_per_unit: Decimal = Field(ge=0, allow_inf_nan=False)
+    sources: tuple[SourceReference, ...] = ()
+
+
 class LatePenaltyCostInput(ContractModel):
     revenue_eur: Decimal = Field(ge=0)
     delay_days: int = Field(ge=0)

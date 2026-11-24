@@ -26,6 +26,9 @@ IncidentInput
 - Important numbers include a `CalculationTrace` with formula, inputs, result, unit, and sources.
 - Open purchase orders expose expedite eligibility, percentage, and time gain through `OpenPurchaseOrder`.
 - Recovery planning calls `OperationalCostService`; it does not import calculation internals.
+- For purchase estimates, pass the proposed quantity, selected unit price and its sources in
+  `PurchaseCostInput`. For transfers, pass the proposed quantity and trusted policy rate with
+  its source in `TransferCostInput`. Both methods return a euro-denominated calculation trace.
 - External-risk evidence identifies the relevant upstream manufacturer and alert date.
 - Warnings use `DataQualityWarning` or `SecurityFinding` rather than free-form logging only.
 - Approval includes a stable hash of the exact canonical action payload.
