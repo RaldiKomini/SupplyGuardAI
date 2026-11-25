@@ -1,7 +1,10 @@
-"""Investigation steps: impact (Raldi), evidence (George), recovery plan (Athanasia)."""
+"""Investigation steps: impact (Raldi), evidence (George), the Deep Agent investigation,
+and the recovery plan (Athanasia)."""
 
+from langchain_core.language_models import BaseChatModel
 from langchain_core.messages import AIMessage
 
+from supplyguard.agents.deep_investigation import InvestigationIncomplete, investigate_case
 from supplyguard.contracts import (
     AuthorizationContext,
     CaseStatus,
@@ -15,7 +18,7 @@ from supplyguard.workflow.services import WorkflowServices
 from supplyguard.workflow.state import CaseState
 
 
-def make_investigation_steps(services: WorkflowServices) -> dict:
+def make_investigation_steps(services: WorkflowServices, model: BaseChatModel) -> dict:
     async def investigate_impact(state: CaseState) -> dict:
         incident = ConfirmedIncident.model_validate(state["incident"])
         try:
@@ -37,6 +40,24 @@ def make_investigation_steps(services: WorkflowServices) -> dict:
             }
         return {"evidence": evidence.model_dump(mode="json")}
 
+    async def deep_investigation(state: CaseState) -> dict:
+        """Extended investigation. It adds findings; planning does not depend on it, so a
+        failure is recorded and the case continues."""
+        try:
+            findings = await investigate_case(
+                model,
+                OperationalIntelligenceResult.model_validate(state["intelligence"]),
+                EvidenceBundle.model_validate(state["evidence"]),
+            )
+        except InvestigationIncomplete as incomplete:  # keep what was found before the limit
+            return {
+                "investigation_findings": [f.model_dump() for f in incomplete.findings],
+                "errors": [f"Deep investigation incomplete: {incomplete}"],
+            }
+        except Exception as error:
+            return {"investigation_findings": [], "errors": [f"Deep investigation failed: {error}"]}
+        return {"investigation_findings": [f.model_dump() for f in findings]}
+
     async def plan_recovery(state: CaseState) -> dict:
         try:
             plan = await services.planning.propose(
@@ -51,6 +72,7 @@ def make_investigation_steps(services: WorkflowServices) -> dict:
     return {
         "investigate_impact": investigate_impact,
         "collect_evidence": collect_evidence,
+        "deep_investigation": deep_investigation,
         "plan_recovery": plan_recovery,
     }
 

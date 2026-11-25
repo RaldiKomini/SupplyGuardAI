@@ -10,6 +10,7 @@ from datetime import UTC, datetime
 from decimal import Decimal
 
 import pytest
+from langchain_core.messages import AIMessage
 from langchain_core.runnables import RunnableLambda
 
 from supplyguard.contracts import (
@@ -75,13 +76,28 @@ class FakeMasterData:
 
 
 class ScriptedModel:
-    """Returns the given extractions in order, one per call."""
+    """Structured calls return the given objects in order; plain calls return a fixed answer."""
 
-    def __init__(self, *extractions) -> None:
+    def __init__(self, *extractions, answer: str = "Answer from the case record.") -> None:
         self.extractions = list(extractions)
+        self.answer = answer
 
     def with_structured_output(self, schema, **kwargs):
         return RunnableLambda(lambda _prompt: self.extractions.pop(0))
+
+    async def ainvoke(self, messages, **kwargs) -> AIMessage:
+        return AIMessage(self.answer)
+
+
+class FakeMemory:
+    def __init__(self) -> None:
+        self.saved = {}
+
+    async def save(self, memory) -> None:
+        self.saved[memory.memory_id] = memory  # same id replaces, like an upsert
+
+    async def search(self, query, authorization, limit=3):
+        return tuple(self.saved.values())[:limit]
 
 
 class FakeIntelligence:
@@ -318,7 +334,27 @@ def make_services(master_data):
             "planning": FakePlanning(),
             "approval": FakeApproval(),
             "execution": FakeExecution(),
+            "memory": FakeMemory(),
         }
         return WorkflowServices(**(parts | replacements))
 
     return build
+
+
+@pytest.fixture(autouse=True)
+def quick_investigation(monkeypatch):
+    """Workflow tests skip the real Deep Agent; tests/workflow/test_deep_investigation.py
+    runs it with a scripted tool-calling model. Set .findings or .error to change the stand-in."""
+
+    class StandIn:
+        findings: list = []
+        error: Exception | None = None
+
+        async def __call__(self, model, intelligence, evidence):
+            if self.error:
+                raise self.error
+            return self.findings
+
+    stand_in = StandIn()
+    monkeypatch.setattr("supplyguard.workflow.investigation.investigate_case", stand_in)
+    return stand_in

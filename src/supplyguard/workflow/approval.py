@@ -13,6 +13,7 @@ from supplyguard.contracts import (
     ExecutionStatus,
     RecoveryPlan,
 )
+from supplyguard.reporting import build_incident_report, resolution_memory
 from supplyguard.workflow.services import WorkflowServices
 from supplyguard.workflow.state import CaseState
 
@@ -120,3 +121,16 @@ def finish(state: CaseState) -> dict:
         return {"messages": [AIMessage(text)], "status": CaseStatus.FAILED.value}
     text = "The approved actions were carried out:\n" + "\n".join(lines)
     return {"messages": [AIMessage(text)], "status": CaseStatus.COMPLETED.value}
+
+
+def make_report_step(services: WorkflowServices):
+    async def write_report(state: CaseState) -> dict:
+        """The incident report, and the approved summary for future cases if the plan ran.
+        The memory id is one per case, so a rerun after a restart replaces it."""
+        report = build_incident_report(state)
+        memory = resolution_memory(state)
+        if memory:
+            await services.memory.save(memory)
+        return {"report": report, "messages": [AIMessage(report)]}
+
+    return write_report

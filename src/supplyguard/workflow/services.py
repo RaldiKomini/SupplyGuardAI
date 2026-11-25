@@ -9,6 +9,7 @@ from supplyguard.contracts.protocols import (
     OperationalIntelligenceService,
     ProcurementExecutionService,
     RecoveryPlanningService,
+    ResolutionMemoryStore,
 )
 
 
@@ -20,3 +21,4 @@ class WorkflowServices:
     planning: RecoveryPlanningService  # Athanasia: options, recommendation, challenge findings
     approval: ApprovalService  # Athanasia: exact payload, decision rules, revalidation
     execution: ProcurementExecutionService  # Athanasia: idempotent procurement writes
+    memory: ResolutionMemoryStore  # George: approved resolution summaries for future cases

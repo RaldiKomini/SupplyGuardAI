@@ -11,11 +11,19 @@ from conftest import FakeIntelligence
 from langgraph.checkpoint.memory import InMemorySaver
 from langgraph.types import Command
 from test_approval_flow import CONFIG, LARGER_ORDER, decide, golden_model, start
+from test_case_workflow import MARIA, approve, collect, workflow
+from test_case_workflow import start as start_case
 
+from supplyguard.app.case_service import CaseService
 from supplyguard.approval.policy import load_approval_policy
 from supplyguard.approval.service import DeterministicApprovalService
 from supplyguard.calculations.service import DeterministicCostService
-from supplyguard.contracts import ConfirmedIncident, SupplierCapability
+from supplyguard.contracts import (
+    ApprovalDecision,
+    AuthorizationContext,
+    ConfirmedIncident,
+    SupplierCapability,
+)
 from supplyguard.procurement import mcp_server
 from supplyguard.procurement.approvals import InMemoryApprovalRecords
 from supplyguard.procurement.execution import InMemoryExecutionStore
@@ -137,3 +145,41 @@ def test_refused_edit_leaves_original_request_approvable(
     finished = _approve(graph, request, "u-fc-01", "finance_controller")
     assert finished["status"] == "completed"
     assert len(store.results) == 1
+
+
+def test_finance_can_submit_second_approval_without_case_access(
+    scripted_model, make_services, real_adapters
+) -> None:
+    approval, execution, store = real_adapters
+    flow = workflow(scripted_model, make_services(approval=approval, execution=execution))
+    request = start_case(flow)[-1].payload["request"]
+    assert approve(flow, request)[-1].stage == "await_approval"
+
+    class RequestSource:
+        async def get_request(self, approval_request_id):
+            saved = await approval.records.load(approval_request_id)
+            return saved[0] if saved else None
+
+    finance = AuthorizationContext(user_id="u-fc-01", role="finance_controller")
+    decision = ApprovalDecision(
+        approval_request_id=request["approval_request_id"],
+        case_id=request["case_id"],
+        payload_hash=request["payload_hash"],
+        approved=True,
+        approver_user_ids=(finance.user_id,),
+        approver_roles=(finance.role,),
+        decided_at=datetime(2026, 10, 19, 12, tzinfo=UTC),
+    )
+
+    async def submit():
+        app = CaseService(flow, approvals=RequestSource())
+        stream = await app.submit_approval(decision, finance)
+        return [event async for event in stream]
+
+    events = asyncio.run(submit())
+    assert [event.stage for event in events] == ["record_decision"]
+    assert all(not event.payload for event in events)
+    assert len(store.results) == 1
+    assert "Incident report" in collect(flow.resume_case(request["case_id"], MARIA))[-1].message
+    with pytest.raises(PermissionError):
+        collect(flow.resume_case(request["case_id"], finance))
