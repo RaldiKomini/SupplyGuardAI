@@ -72,19 +72,41 @@ def to_evidence_conflict(conflict: Conflict) -> EvidenceConflict:
     )
 
 
-def to_security_finding(finding: ContentFinding, source: Citation | None) -> SecurityFinding:
+def to_security_finding(
+    finding: ContentFinding, source: Citation | None, count: int = 1
+) -> SecurityFinding:
     """High-severity injections are BLOCKING; all of them were removed (blocked=True).
 
     The message deliberately does NOT repeat the attack text: this finding may be shown
     to a model later (e.g. in the incident report), and quoting the attack would put
-    it back into a prompt. The snippet stays in the red-team report only."""
+    it back into a prompt. The snippet stays in the red-team report only.
+    `count`: how many times this type was found in this source (see to_security_findings)."""
+    times = f" (found {count} times)" if count > 1 else ""
     return SecurityFinding(
         finding_type=f"prompt_injection.{finding.category}",
         message=(
-            f"Embedded instruction of type '{finding.category}' found in {finding.source_id}; "
-            f"{finding.action_taken}."
+            f"Embedded instruction of type '{finding.category}' found in {finding.source_id}"
+            f"{times}; {finding.action_taken}."
         ),
         severity=Severity.BLOCKING if finding.severity == "high" else Severity.WARNING,
         blocked=True,
         sources=(to_source_reference(source),) if source else (),
+    )
+
+
+def to_security_findings(
+    findings: list[ContentFinding], citations: dict[str, Citation] | None = None
+) -> tuple[SecurityFinding, ...]:
+    """One SecurityFinding per (source, type), in first-seen order.
+
+    The detector reports every match, so one document can hold the same attack type
+    twice (the Helios notice has two 'system_impersonation' phrases). The report needs
+    each type once per document, with the number of matches in the message."""
+    groups: dict[tuple[str, str], list[ContentFinding]] = {}
+    for f in findings:
+        groups.setdefault((f.source_id, f.category), []).append(f)
+    citations = citations or {}
+    return tuple(
+        to_security_finding(same[0], citations.get(source_id), count=len(same))
+        for (source_id, _), same in groups.items()
     )
