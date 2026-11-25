@@ -218,6 +218,11 @@ class FakeApproval:
         version = request.payload_version + 1
         return self._request(request.case_id, request.option_id, modified_actions, version)
 
+    async def record_modification(self, request, decision) -> ApprovalRequest:
+        revised = await self.revalidate(request, decision.modified_actions)
+        await self.record_decision(request, decision)
+        return revised
+
 
 class FakeExecution:
     """Idempotent like the real one: a repeated key returns the first result, writes nothing."""

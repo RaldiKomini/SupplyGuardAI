@@ -9,7 +9,8 @@ from dataclasses import dataclass
 from datetime import datetime
 from typing import Protocol
 
-from sqlalchemy import insert, select
+from sqlalchemy import func, insert, select
+from sqlalchemy.exc import IntegrityError
 
 from supplyguard.contracts import ApprovalDecision, ApprovalRequest, RecoveryAction
 from supplyguard.data.database import Database
@@ -33,13 +34,32 @@ class ApprovalRecords(Protocol):
         self, approval_request_id: str
     ) -> tuple[ApprovalRequest, ApprovalDecision] | None: ...
 
+    async def latest_version(self, case_id: str) -> int: ...
+
+
+class ApprovalRecordStore(ApprovalRecords, Protocol):
+    """Approval records that can also be written (used by the approval service)."""
+
+    async def save_request(self, request: ApprovalRequest) -> None: ...
+
+    async def save_decision(self, approval_request_id: str, record: DecisionRecord) -> None: ...
+
+    async def save_revision(
+        self, approval_request_id: str, record: DecisionRecord, revision: ApprovalRequest
+    ) -> ApprovalRequest: ...
+
 
 def decision_from_records(
     request: ApprovalRequest, records: Sequence[DecisionRecord]
 ) -> ApprovalDecision:
-    """Combine the stored decisions; any reject or modify means not approved."""
+    """Combine the stored decisions into one.
+
+    Approved only when nobody rejected or modified the request and the approving users
+    together hold every required role. One approval of a two-role tier is not enough.
+    """
     approvals = [r for r in records if r.decision == APPROVE]
-    approved = bool(approvals) and len(approvals) == len(records)
+    roles_covered = set(request.required_approver_roles) <= {r.role for r in approvals}
+    approved = roles_covered and len(approvals) == len(records)
     decided_at = max((r.decided_at for r in records), default=request.requested_at)
     return ApprovalDecision(
         approval_request_id=request.approval_request_id,
@@ -64,7 +84,33 @@ class InMemoryApprovalRecords:
         self.requests[request.approval_request_id] = request
 
     async def save_decision(self, approval_request_id: str, record: DecisionRecord) -> None:
-        self.decisions.setdefault(approval_request_id, []).append(record)
+        records = self.decisions.setdefault(approval_request_id, [])
+        if any(existing.user_id == record.user_id for existing in records):
+            # Same rule as the primary key in procurement.approval_decisions.
+            raise ValueError(f"{record.user_id} has already decided on {approval_request_id}")
+        records.append(record)
+
+    async def save_revision(
+        self, approval_request_id: str, record: DecisionRecord, revision: ApprovalRequest
+    ) -> ApprovalRequest:
+        previous = self.requests.get(revision.approval_request_id)
+        decisions = self.decisions.get(approval_request_id, [])
+        if (
+            previous is not None
+            and previous.payload_hash == revision.payload_hash
+            and record in decisions
+            and await self.latest_version(revision.case_id) == revision.payload_version
+        ):
+            return previous
+        if previous is not None:
+            raise ValueError("a newer approval request already exists for this case")
+        await self.save_decision(approval_request_id, record)
+        self.requests[revision.approval_request_id] = revision
+        return revision
+
+    async def latest_version(self, case_id: str) -> int:
+        versions = [r.payload_version for r in self.requests.values() if r.case_id == case_id]
+        return max(versions, default=0)
 
     async def load(
         self, approval_request_id: str
@@ -89,17 +135,65 @@ class PostgresApprovalRecords:
     async def save_decision(
         self, approval_request_id: str, record: DecisionRecord, comment: str | None = None
     ) -> None:
+        try:
+            await self._insert_decision(approval_request_id, record, comment)
+        except IntegrityError as error:
+            raise ValueError(
+                f"{record.user_id} has already decided on {approval_request_id}"
+            ) from error
+
+    async def _insert_decision(
+        self, approval_request_id: str, record: DecisionRecord, comment: str | None
+    ) -> None:
         async with self.database.transaction() as connection:
-            await connection.execute(
-                insert(approval_decisions).values(
-                    approval_request_id=approval_request_id,
-                    user_id=record.user_id,
-                    role=record.role,
-                    decision=record.decision,
-                    decided_at=record.decided_at,
-                    comment=comment,
+            await connection.execute(_decision_insert(approval_request_id, record, comment))
+
+    async def save_revision(
+        self, approval_request_id: str, record: DecisionRecord, revision: ApprovalRequest
+    ) -> ApprovalRequest:
+        # A rejected decision or duplicate request must roll back both writes.
+        try:
+            async with self.database.transaction() as connection:
+                await connection.execute(_decision_insert(approval_request_id, record))
+                await connection.execute(insert(approval_requests).values(request_row(revision)))
+        except IntegrityError as error:
+            previous = await self._replayed_revision(approval_request_id, record, revision)
+            if previous is not None:
+                return previous
+            raise ValueError(
+                f"{record.user_id} has already decided on {approval_request_id}, "
+                "or a newer request already exists"
+            ) from error
+        return revision
+
+    async def _replayed_revision(
+        self, approval_request_id: str, record: DecisionRecord, revision: ApprovalRequest
+    ) -> ApprovalRequest | None:
+        """Return a committed edit when a workflow retries before its checkpoint was saved."""
+        saved = await self.load(revision.approval_request_id)
+        if saved is None or saved[0].payload_hash != revision.payload_hash:
+            return None
+        if await self.latest_version(revision.case_id) != revision.payload_version:
+            return None
+        async with self.database.connection() as connection:
+            decision = await connection.scalar(
+                select(approval_decisions.c.decision).where(
+                    approval_decisions.c.approval_request_id == approval_request_id,
+                    approval_decisions.c.user_id == record.user_id,
+                    approval_decisions.c.role == record.role,
+                    approval_decisions.c.decided_at == record.decided_at,
                 )
             )
+        return saved[0] if decision == record.decision else None
+
+    async def latest_version(self, case_id: str) -> int:
+        async with self.database.connection() as connection:
+            latest = await connection.scalar(
+                select(func.max(approval_requests.c.payload_version)).where(
+                    approval_requests.c.case_id == case_id
+                )
+            )
+        return latest or 0
 
     async def load(
         self, approval_request_id: str
@@ -142,6 +236,17 @@ class PostgresApprovalRecords:
             requested_at=row["requested_at"],
         )
         return request, decision_from_records(request, records)
+
+
+def _decision_insert(approval_request_id: str, record: DecisionRecord, comment: str | None = None):
+    return insert(approval_decisions).values(
+        approval_request_id=approval_request_id,
+        user_id=record.user_id,
+        role=record.role,
+        decision=record.decision,
+        decided_at=record.decided_at,
+        comment=comment,
+    )
 
 
 def request_row(request: ApprovalRequest) -> dict[str, object]:

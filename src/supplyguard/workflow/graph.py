@@ -3,7 +3,7 @@
 intake -> investigate_impact -> collect_evidence -> plan_recovery -> request_approval
 -> await_approval (pause) -> record_decision -> execute (approved) -> finish
                                              -> finish (rejected)
-                         -> revalidate (edit) -> record_decision -> await_approval
+                         -> revalidate and record (edit) -> await_approval
 
 Every finished step is saved by the checkpointer, so after a restart the case continues at
 the next unfinished step and finished steps (such as execution) are not repeated.
@@ -18,7 +18,6 @@ from supplyguard.workflow.approval import (
     make_approval_steps,
     route_after_await,
     route_after_record,
-    route_after_revalidation,
 )
 from supplyguard.workflow.intake.nodes import (
     ask_clarification,
@@ -93,11 +92,7 @@ def build_graph(
             "revalidate": "revalidate",
         },
     )
-    graph.add_conditional_edges(
-        "revalidate",
-        route_after_revalidation,
-        {"await_approval": "await_approval", "record_decision": "record_decision"},
-    )
+    graph.add_edge("revalidate", "await_approval")
     graph.add_conditional_edges(
         "record_decision",
         route_after_record,

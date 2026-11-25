@@ -16,7 +16,11 @@ from mcp.server.fastmcp import FastMCP
 
 from supplyguard.data.database import Database
 from supplyguard.procurement.approvals import ApprovalRecords, PostgresApprovalRecords
-from supplyguard.procurement.execution import ExecutionStore, execute_approved
+from supplyguard.procurement.execution import (
+    ExecutionStore,
+    execute_approved,
+    rejected_results,
+)
 from supplyguard.procurement.store import PostgresExecutionStore
 from supplyguard.repositories.operational import OperationalRepository
 
@@ -93,7 +97,12 @@ async def execute_approved_request(approval_request_id: str) -> dict[str, list[d
     if records is None:
         raise ValueError(f"unknown approval request {approval_request_id}")
     request, decision = records
-    results = await execute_approved(request, decision, _store(), now=_now())
+    latest = await _approvals().latest_version(request.case_id)
+    if latest > request.payload_version:
+        message = f"superseded by version {latest} of this case's approval request"
+        results = rejected_results(request, message)
+    else:
+        results = await execute_approved(request, decision, _store(), now=_now())
     return {"results": [result.model_dump(mode="json") for result in results]}
 
 
