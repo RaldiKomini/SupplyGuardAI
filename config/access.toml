@@ -22,6 +22,7 @@ scopes = ["public", "internal", "procurement", "finance-confidential"]
 
 [[users]]
 id = "u-pm-01"
+email = "maria.keller@supplyguard.example"
 display_name = "Maria Keller"
 role = "procurement_manager"
 factory_ids = ["F1", "F2", "F3"]
@@ -29,6 +30,7 @@ password_env = "AUTH_PASSWORD_U_PM_01"
 
 [[users]]
 id = "u-an-01"
+email = "jon.weber@supplyguard.example"
 display_name = "Jon Weber"
 role = "operations_analyst"
 factory_ids = ["F1"]
@@ -36,6 +38,7 @@ password_env = "AUTH_PASSWORD_U_AN_01"
 
 [[users]]
 id = "u-ic-01"
+email = "ines.duarte@supplyguard.example"
 display_name = "Ines Duarte"
 role = "incident_coordinator"
 factory_ids = ["F2", "F3"]
@@ -43,6 +46,7 @@ password_env = "AUTH_PASSWORD_U_IC_01"
 
 [[users]]
 id = "u-fc-01"
+email = "paul.novak@supplyguard.example"
 display_name = "Paul Novak"
 role = "finance_controller"
 factory_ids = ["F1", "F2", "F3"]
@@ -50,6 +54,7 @@ password_env = "AUTH_PASSWORD_U_FC_01"
 
 [[users]]
 id = "u-fd-01"
+email = "finance.director@supplyguard.example"
 display_name = "Demo Finance Director"
 role = "finance_director"
 factory_ids = ["F1", "F2", "F3"]
@@ -57,6 +62,7 @@ password_env = "AUTH_PASSWORD_U_FD_01"
 
 [[users]]
 id = "u-ro-01"
+email = "readonly.guest@supplyguard.example"
 display_name = "Read Only Guest"
 role = "viewer"
 password_env = "AUTH_PASSWORD_U_RO_01"

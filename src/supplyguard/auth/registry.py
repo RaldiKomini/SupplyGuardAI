@@ -16,10 +16,12 @@ class AccessRegistry:
     def __init__(self, config: AccessConfig, environ: Mapping[str, str] | None = None) -> None:
         self._config = config
         self._users = {user.id: user for user in config.users}
+        self._emails = {user.email.casefold(): user for user in config.users if user.email}
         self._environ = os.environ if environ is None else environ
 
     def authenticate(self, user_id: str, password: str) -> AuthorizationContext | None:
-        user = self._users.get(user_id)
+        login = user_id.strip()
+        user = self._users.get(login) or self._emails.get(login.casefold())
         expected = self._environ.get(user.password_env, "") if user else ""
         # Compare even for unknown users so timing does not reveal which ids exist.
         matches = compare_digest(password.encode(), expected.encode())
