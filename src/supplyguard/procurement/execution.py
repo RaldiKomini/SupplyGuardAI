@@ -17,6 +17,7 @@ from supplyguard.contracts import (
     RecoveryAction,
     RecoveryActionType,
 )
+from supplyguard.tracing import traced
 
 # The simulated ERP prefix for each action type it can carry out.
 SIMULATED_ERP = {
@@ -43,6 +44,7 @@ def idempotency_key(request: ApprovalRequest, action: RecoveryAction) -> str:
     return f"{request.case_id}:{request.approval_request_id}:{action.action_id}"
 
 
+@traced("procurement.execute_approved", component="procurement")
 async def execute_approved(
     request: ApprovalRequest,
     decision: ApprovalDecision,

@@ -9,6 +9,7 @@ from supplyguard.contracts import ConfirmedIncident, EvidenceBundle, RecoveryPla
 from supplyguard.contracts.impact import OperationalIntelligenceResult
 from supplyguard.contracts.protocols import OperationalCostService
 from supplyguard.planning.options import PlanningInputs, build_recovery_plan
+from supplyguard.tracing import traced
 
 
 class DeterministicRecoveryPlanningService:
@@ -29,6 +30,7 @@ class DeterministicRecoveryPlanningService:
         data = json.loads(path.read_text(encoding="utf-8"))
         return cls(costs, Decimal(str(data["transfer_cost_eur_per_unit"])))
 
+    @traced("recovery_planning.propose", component="planning")
     async def propose(
         self,
         incident: ConfirmedIncident,
