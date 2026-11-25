@@ -1,5 +1,5 @@
 version = 1
-revision = 5
+revision = 3
 requires-python = "==3.13.*"
 
 [[package]]
@@ -2846,6 +2846,7 @@ dependencies = [
     { name = "langchain-openai" },
     { name = "langgraph" },
     { name = "langgraph-checkpoint-postgres" },
+    { name = "langsmith" },
     { name = "mcp" },
     { name = "neo4j" },
     { name = "numpy" },
@@ -2876,6 +2877,7 @@ requires-dist = [
     { name = "langchain-openai", specifier = ">=1.0" },
     { name = "langgraph", specifier = ">=1.0" },
     { name = "langgraph-checkpoint-postgres", specifier = ">=3.0" },
+    { name = "langsmith", specifier = ">=0.16,<1" },
     { name = "mcp", specifier = ">=1.30,<2" },
     { name = "neo4j", specifier = ">=6.4.1" },
     { name = "numpy", specifier = ">=2.5.5" },
