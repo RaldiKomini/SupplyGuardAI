@@ -9,7 +9,8 @@ from dataclasses import dataclass
 from datetime import datetime
 from typing import Protocol
 
-from sqlalchemy import insert, select
+from sqlalchemy import func, insert, select
+from sqlalchemy.exc import IntegrityError
 
 from supplyguard.contracts import ApprovalDecision, ApprovalRequest, RecoveryAction
 from supplyguard.data.database import Database
@@ -32,6 +33,16 @@ class ApprovalRecords(Protocol):
     async def load(
         self, approval_request_id: str
     ) -> tuple[ApprovalRequest, ApprovalDecision] | None: ...
+
+
+class ApprovalRecordStore(ApprovalRecords, Protocol):
+    """Approval records that can also be written (used by the approval service)."""
+
+    async def save_request(self, request: ApprovalRequest) -> None: ...
+
+    async def save_decision(self, approval_request_id: str, record: DecisionRecord) -> None: ...
+
+    async def latest_version(self, case_id: str) -> int: ...
 
 
 def decision_from_records(
@@ -64,7 +75,15 @@ class InMemoryApprovalRecords:
         self.requests[request.approval_request_id] = request
 
     async def save_decision(self, approval_request_id: str, record: DecisionRecord) -> None:
-        self.decisions.setdefault(approval_request_id, []).append(record)
+        records = self.decisions.setdefault(approval_request_id, [])
+        if any(existing.user_id == record.user_id for existing in records):
+            # Same rule as the primary key in procurement.approval_decisions.
+            raise ValueError(f"{record.user_id} has already decided on {approval_request_id}")
+        records.append(record)
+
+    async def latest_version(self, case_id: str) -> int:
+        versions = [r.payload_version for r in self.requests.values() if r.case_id == case_id]
+        return max(versions, default=0)
 
     async def load(
         self, approval_request_id: str
@@ -89,6 +108,16 @@ class PostgresApprovalRecords:
     async def save_decision(
         self, approval_request_id: str, record: DecisionRecord, comment: str | None = None
     ) -> None:
+        try:
+            await self._insert_decision(approval_request_id, record, comment)
+        except IntegrityError as error:
+            raise ValueError(
+                f"{record.user_id} has already decided on {approval_request_id}"
+            ) from error
+
+    async def _insert_decision(
+        self, approval_request_id: str, record: DecisionRecord, comment: str | None
+    ) -> None:
         async with self.database.transaction() as connection:
             await connection.execute(
                 insert(approval_decisions).values(
@@ -100,6 +129,15 @@ class PostgresApprovalRecords:
                     comment=comment,
                 )
             )
+
+    async def latest_version(self, case_id: str) -> int:
+        async with self.database.connection() as connection:
+            latest = await connection.scalar(
+                select(func.max(approval_requests.c.payload_version)).where(
+                    approval_requests.c.case_id == case_id
+                )
+            )
+        return latest or 0
 
     async def load(
         self, approval_request_id: str
