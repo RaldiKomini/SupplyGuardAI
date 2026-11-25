@@ -4,12 +4,15 @@ Built from templates over the saved case, not by the model, so every number and 
 report is one the workflow received from the owning component.
 """
 
+from collections.abc import Sequence
+
 from supplyguard.contracts import (
     ApprovalDecision,
     ApprovalRequest,
     ConfirmedIncident,
     EvidenceBundle,
     ExecutionResult,
+    ExecutionStatus,
     OperationalIntelligenceResult,
     RecoveryPlan,
     ResolutionMemory,
@@ -46,16 +49,28 @@ def _load(state: dict):
     )
 
 
+def completed_action_count(results: Sequence[ExecutionResult]) -> int:
+    return sum(
+        result.status in (ExecutionStatus.SUCCEEDED, ExecutionStatus.ALREADY_EXECUTED)
+        for result in results
+    )
+
+
 def _executed(results: list[ExecutionResult]) -> bool:
-    return bool(results) and all(r.status in ("succeeded", "already_executed") for r in results)
+    return bool(results) and completed_action_count(results) == len(results)
 
 
 def build_incident_report(state: dict) -> str:
     incident, intelligence, evidence, plan, request, decision, results = _load(state)
     out = [f"# Incident report: case {state['case_id']}", ""]
 
-    if _executed(results):
+    completed = completed_action_count(results)
+    if results and completed == len(results):
         outcome = f"The approved plan was executed ({_eur(request.total_cost_eur)})."
+    elif completed:
+        outcome = (
+            f"{completed} of {len(results)} approved actions completed. See execution outcome."
+        )
     elif decision and not decision.approved and not decision.is_modification:
         outcome = "The recommendation was rejected; nothing was executed."
     else:

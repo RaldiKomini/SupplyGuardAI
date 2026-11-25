@@ -1,7 +1,7 @@
 """CaseWorkflow: the CaseWorkflowService the application layer calls.
 
-Runs the graph and turns each finished step into a UIEvent, and makes sure a user only ever
-opens or acts on their own cases.
+Runs the graph and turns each finished step into a UIEvent. Case access is owner-only.
+Designated approvers may submit decisions without opening the case.
 """
 
 from collections.abc import AsyncIterator, Sequence
@@ -14,6 +14,7 @@ from langgraph.types import Command
 
 from supplyguard.contracts import (
     ApprovalDecision,
+    ApprovalRequest,
     AuthorizationContext,
     CaseStatus,
     CaseSummary,
@@ -156,6 +157,10 @@ class CaseWorkflow:
         if pending:
             yield self._pause_event(case_id, pending)
             return
+        if state.next:
+            async for event in self._run(case_id, None):
+                yield event
+            return
         said = [m.content for m in state.values.get("messages", []) if isinstance(m, AIMessage)]
         yield _event(
             case_id,
@@ -168,16 +173,36 @@ class CaseWorkflow:
     async def submit_approval(
         self, decision: ApprovalDecision, authorization: AuthorizationContext
     ) -> AsyncIterator[UIEvent]:
-        state = await self._owned_state(decision.case_id, authorization)
+        if decision.approver_user_ids != (authorization.user_id,) or decision.approver_roles != (
+            authorization.role,
+        ):
+            raise PermissionError("the decision must name only the signed-in user and role")
+        state = await self._graph.aget_state(self._config(decision.case_id))
+        owns_case = state.values.get("user_id") == authorization.user_id
         pending = self._pending(state)
         if not pending or pending["type"] != "approval":
+            if not owns_case:
+                raise PermissionError("no approval is available to this user")
             raise ValueError("this case is not waiting for an approval")
-        if decision.approved and authorization.user_id not in decision.approver_user_ids:
-            raise PermissionError("the signed-in user must be one of the approvers")
+        request = ApprovalRequest.model_validate(pending["request"])
+        if authorization.role not in request.required_approver_roles:
+            raise PermissionError("no approval is available to this user")
+        if (
+            decision.case_id != request.case_id
+            or decision.approval_request_id != request.approval_request_id
+            or decision.payload_hash != request.payload_hash
+        ):
+            raise ValueError("the decision does not match the current approval request")
         async for event in self._run(
             decision.case_id, Command(resume=decision.model_dump(mode="json"))
         ):
-            yield event
+            if owns_case:
+                yield event
+            elif event.stage in ("record_decision", "revalidate"):
+                # A designated approver has no access to case results or the final report.
+                yield _event(
+                    decision.case_id, UIEventType.PROGRESS, event.stage, "Decision submitted."
+                )
 
     async def list_cases(self, authorization: AuthorizationContext) -> Sequence[CaseSummary]:
         case_ids = []

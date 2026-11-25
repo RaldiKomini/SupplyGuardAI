@@ -16,9 +16,11 @@ from pydantic import BaseModel, ConfigDict, Field
 from supplyguard.contracts import (
     ConfirmedIncident,
     EvidenceBundle,
+    ExecutionResult,
     OperationalIntelligenceResult,
     RecoveryPlan,
 )
+from supplyguard.reporting.report import completed_action_count
 from supplyguard.workflow.services import WorkflowServices
 from supplyguard.workflow.settings import policy_spending_cap
 from supplyguard.workflow.state import CaseState
@@ -121,8 +123,10 @@ def _recap(state: dict) -> str:
             f"Approval request version {request['payload_version']}: "
             f"EUR {Decimal(request['total_cost_eur']):,.0f}."
         )
-    if state.get("execution_results"):
-        lines.append(f"{len(state['execution_results'])} approved action(s) carried out.")
+    results = [ExecutionResult.model_validate(row) for row in state.get("execution_results") or []]
+    if results:
+        completed = completed_action_count(results)
+        lines.append(f"{completed} of {len(results)} approved actions completed.")
     return "\n".join(lines)
 
 

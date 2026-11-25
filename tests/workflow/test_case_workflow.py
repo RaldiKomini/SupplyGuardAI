@@ -4,11 +4,14 @@ import asyncio
 from datetime import UTC, datetime
 
 import pytest
+from conftest import FakeExecution, FakePlanning
 from langgraph.checkpoint.memory import InMemorySaver
+from langgraph.types import Command
 
 from supplyguard.contracts import (
     ApprovalDecision,
     AuthorizationContext,
+    ExecutionStatus,
     IncidentInput,
     UIEventType,
 )
@@ -45,17 +48,20 @@ def start(flow: CaseWorkflow) -> list:
     return collect(flow.start_case(incident, MARIA))
 
 
-def approve(flow: CaseWorkflow, request: dict, *, approved: bool = True) -> list:
-    decision = ApprovalDecision(
+def owner_decision(request: dict, *, approved: bool = True) -> ApprovalDecision:
+    return ApprovalDecision(
         approval_request_id=request["approval_request_id"],
         case_id="CASE-1",
         payload_hash=request["payload_hash"],
         approved=approved,
-        approver_user_ids=("u-pm-01",) if approved else (),
-        approver_roles=("procurement_manager",) if approved else (),
+        approver_user_ids=("u-pm-01",),
+        approver_roles=("procurement_manager",),
         decided_at=datetime(2026, 10, 19, 12, tzinfo=UTC),
     )
-    return collect(flow.submit_approval(decision, MARIA))
+
+
+def approve(flow: CaseWorkflow, request: dict, *, approved: bool = True) -> list:
+    return collect(flow.submit_approval(owner_decision(request, approved=approved), MARIA))
 
 
 def test_start_case_shows_progress_and_ends_waiting_for_approval(scripted_model, make_services):
@@ -142,6 +148,67 @@ def test_resume_shows_the_pending_approval_again(scripted_model, make_services):
 
     assert events[0].event_type is UIEventType.APPROVAL
     assert events[0].payload["request"]["payload_hash"] == request["payload_hash"]
+
+
+def test_resume_continues_from_checkpoint_before_execution(scripted_model, make_services):
+    services = make_services()
+    flow = workflow(scripted_model, services)
+    request = start(flow)[-1].payload["request"]
+    config = flow._config(request["case_id"])
+
+    asyncio.run(
+        flow._graph.ainvoke(
+            Command(resume=owner_decision(request).model_dump(mode="json")),
+            config,
+            interrupt_before=["execute"],
+        )
+    )
+    assert asyncio.run(flow._graph.aget_state(config)).next == ("execute",)
+    assert services.execution.writes == []
+
+    events = collect(flow.resume_case(request["case_id"], MARIA))
+
+    assert events[-1].stage == "write_report"
+    assert len(services.execution.writes) == 1
+    collect(flow.resume_case(request["case_id"], MARIA))
+    assert len(services.execution.writes) == 1
+
+
+def test_partial_execution_is_visible_in_report_and_recap(scripted_model, make_services):
+    class TwoActions(FakePlanning):
+        async def propose(self, incident, intelligence, evidence):
+            plan = await super().propose(incident, intelligence, evidence)
+            (option,) = plan.options
+            first = option.actions[0]
+            last = first.model_copy(update={"action_id": "ACT-FAILED"})
+            return plan.model_copy(
+                update={"options": (option.model_copy(update={"actions": (first, last)}),)}
+            )
+
+    class PartialExecution(FakeExecution):
+        async def execute(self, request, decision):
+            first_only = request.model_copy(update={"actions": request.actions[:1]})
+            (first,) = await super().execute(first_only, decision)
+            failed = first.model_copy(
+                update={
+                    "action_id": request.actions[1].action_id,
+                    "idempotency_key": "failed-action",
+                    "status": ExecutionStatus.FAILED,
+                    "message": "Supplier did not confirm.",
+                }
+            )
+            return first, failed
+
+    services = make_services(planning=TwoActions(), execution=PartialExecution())
+    flow = workflow(scripted_model, services, FollowUpIntent(kind="resume"))
+    request = start(flow)[-1].payload["request"]
+    report = approve(flow, request)[-1].payload["report"]
+
+    summary = "1 of 2 approved actions completed."
+    assert summary in report
+    assert "ACT-FAILED: failed" in report
+    assert summary in collect(flow.send_message("CASE-1", "Recap.", MARIA))[-1].message
+    assert services.memory.saved == {}
 
 
 def test_question_while_waiting_is_answered_without_deciding(scripted_model, make_services):
