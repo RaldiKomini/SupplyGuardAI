@@ -37,6 +37,11 @@ STEP_EVENTS = {
     ),
     "investigate_impact": (UIEventType.PROGRESS, "Operational impact analysed.", ("intelligence",)),
     "collect_evidence": (UIEventType.EVIDENCE, "Documentary evidence collected.", ("evidence",)),
+    "recall_similar_cases": (
+        UIEventType.EVIDENCE,
+        "Similar past incidents checked.",
+        ("similar_cases",),
+    ),
     "deep_investigation": (
         UIEventType.EVIDENCE,
         "Extended investigation finished.",

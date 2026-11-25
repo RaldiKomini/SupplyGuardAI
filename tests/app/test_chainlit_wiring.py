@@ -448,3 +448,104 @@ def test_start_new_case_clears_the_restored_case(session, sent) -> None:
 
     assert session.get("case_id") is None
     assert session.get("pending_approval") is None
+
+
+def _request_with_quantity() -> ApprovalRequest:
+    buy = RecoveryAction(
+        action_id="ACT-BUY-S004",
+        action_type=RecoveryActionType.PURCHASE_ALTERNATIVE,
+        payload={"supplier_id": "S004", "component_id": "MC-17", "qty": 3000},
+        cost_eur=Decimal("29400.00"),
+    )
+    return _request().model_copy(update={"actions": (_request().actions[0], buy)})
+
+
+def _reply(monkeypatch: pytest.MonkeyPatch, text: str | None) -> None:
+    class _FakeAsk:
+        def __init__(self, content: str = "", timeout: int = 0) -> None:
+            self.content = content
+
+        async def send(self) -> dict | None:
+            return None if text is None else {"output": text}
+
+    monkeypatch.setattr(chainlit_app.cl, "AskUserMessage", _FakeAsk)
+
+
+def test_editable_request_offers_the_modify_button(session, sent) -> None:
+    asyncio.run(chainlit_app._prompt_approval(_request_with_quantity(), "Approval needed."))
+
+    assert [action.name for action in sent[0].actions] == [
+        "approve_request",
+        "reject_request",
+        "modify_request",
+    ]
+
+
+def test_expedite_quantity_is_fixed_by_the_purchase_order() -> None:
+    request = _request_with_quantity()
+    expedite = request.actions[0]
+    expedite = expedite.model_copy(update={"payload": {**expedite.payload, "qty": 1500}})
+    request = request.model_copy(update={"actions": (expedite, request.actions[1])})
+
+    assert expedite.action_id not in chainlit_app.quantity_question(request)
+    with pytest.raises(ValueError, match="uses the existing purchase order quantity"):
+        chainlit_app.modified_actions(request, f"{expedite.action_id} 1000")
+
+
+def test_modification_changes_only_the_named_quantity() -> None:
+    changed = chainlit_app.modified_actions(_request_with_quantity(), "ACT-BUY-S004 2,500")
+
+    assert [a.payload.get("qty") for a in changed] == [None, 2500]
+    assert changed[0] == _request_with_quantity().actions[0]  # other actions untouched
+
+
+@pytest.mark.parametrize(
+    "reply, problem",
+    [
+        ("buy more please", "write the action ID"),
+        ("ACT-BUY-S004 2.5", "whole-unit quantity"),
+        ("ACT-BUY-S004 25,0", "whole-unit quantity"),
+        ("ACT-BUY-S004 2.500", "whole-unit quantity"),
+        ("ACT-NOPE 100", "no action ACT-NOPE"),
+        ("act-1 100", "has no quantity"),
+        ("ACT-BUY-S004 0", "must be positive"),
+        ("ACT-BUY-S004 3000", "already has quantity"),
+    ],
+)
+def test_unusable_modification_replies_are_refused(reply: str, problem: str) -> None:
+    with pytest.raises(ValueError, match=problem):
+        chainlit_app.modified_actions(_request_with_quantity(), reply)
+
+
+def test_modify_submits_a_non_approval_with_the_changed_actions(
+    session, service, sent, monkeypatch
+) -> None:
+    session.set("pending_approval", _request_with_quantity().model_dump(mode="json"))
+    _reply(monkeypatch, "ACT-BUY-S004 2500")
+
+    asyncio.run(chainlit_app.modify_request(_button("req-1")))
+
+    [decision] = service.decisions
+    assert decision.is_modification and not decision.approved
+    assert decision.modified_actions[1].payload["qty"] == 2500
+    assert session.get("pending_approval") is None
+
+
+def test_modify_without_a_reply_changes_nothing(session, service, sent, monkeypatch) -> None:
+    session.set("pending_approval", _request_with_quantity().model_dump(mode="json"))
+    _reply(monkeypatch, None)
+
+    asyncio.run(chainlit_app.modify_request(_button("req-1")))
+
+    assert service.decisions == []
+    assert "No change was made" in sent[-1].content
+    assert session.get("pending_approval") is not None
+
+
+def test_modify_for_an_old_request_is_refused(session, service, sent, monkeypatch) -> None:
+    _reply(monkeypatch, "ACT-BUY-S004 2500")
+
+    asyncio.run(chainlit_app.modify_request(_button("req-old")))
+
+    assert service.decisions == []
+    assert sent[0].content == STALE_MESSAGE

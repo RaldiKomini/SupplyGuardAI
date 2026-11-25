@@ -352,7 +352,8 @@ def quick_investigation(monkeypatch):
         findings: list = []
         error: Exception | None = None
 
-        async def __call__(self, model, intelligence, evidence):
+        async def __call__(self, model, intelligence, evidence, similar_cases=()):
+            self.similar_cases = list(similar_cases)
             if self.error:
                 raise self.error
             return self.findings

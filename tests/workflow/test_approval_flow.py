@@ -122,6 +122,12 @@ def test_modification_needs_a_new_approval(scripted_model, make_services) -> Non
 
     result = decide(graph, second, approved=True)
     assert services.execution.writes == [LARGER_ORDER.payload]  # the modified quantity
+    report = result["report"]
+    assert "## Original options compared" in report
+    revised = report.split("## Revised recommendation")[1].split("## Approval record")[0]
+    assert "Approval v2 totals EUR 39,200." in revised
+    assert "1,350 units remain uncovered" in revised
+    assert "850 units" not in revised
 
 
 def test_decision_for_an_old_request_is_refused(scripted_model, make_services) -> None:
