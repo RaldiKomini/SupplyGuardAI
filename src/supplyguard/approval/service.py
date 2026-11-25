@@ -21,6 +21,7 @@ from supplyguard.contracts import (
 from supplyguard.contracts.protocols import OperationalCostService
 from supplyguard.planning.options import PlanningInputs
 from supplyguard.procurement.approvals import ApprovalRecordStore, DecisionRecord
+from supplyguard.tracing import traced
 
 # The workflow tells the service which incident and impact report a case was planned on.
 CaseContext = Callable[[str], Awaitable[tuple[ConfirmedIncident, ImpactReport]]]
@@ -46,6 +47,7 @@ class DeterministicApprovalService:
         self.transfer_cost_eur_per_unit = transfer_cost_eur_per_unit
         self.clock = clock
 
+    @traced("approval.create_request", component="approval")
     async def create_request(self, plan: RecoveryPlan) -> ApprovalRequest:
         """Store an approval request for the recommended option of a plan that passed review."""
         if plan.needs_revision:
@@ -64,6 +66,7 @@ class DeterministicApprovalService:
         await self.records.save_request(request)
         return request
 
+    @traced("approval.record_decision", component="approval")
     async def record_decision(
         self, request: ApprovalRequest, decision: ApprovalDecision
     ) -> ApprovalDecision:
@@ -121,6 +124,7 @@ class DeterministicApprovalService:
             raise ValueError("the decision does not match the stored request and payload")
         return stored_request
 
+    @traced("approval.revalidate", component="approval")
     async def revalidate(
         self, request: ApprovalRequest, modified_actions: tuple[RecoveryAction, ...]
     ) -> ApprovalRequest:

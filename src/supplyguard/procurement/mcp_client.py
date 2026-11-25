@@ -8,6 +8,7 @@ from mcp import ClientSession
 from mcp.client.streamable_http import streamable_http_client
 
 from supplyguard.contracts import ApprovalDecision, ApprovalRequest, ExecutionResult
+from supplyguard.tracing import traced
 
 
 class McpProcurementClient:
@@ -21,6 +22,7 @@ class McpProcurementClient:
         self.url = url
         self.timeout_seconds = timeout_seconds
 
+    @traced("procurement.execute", component="procurement")
     async def execute(
         self, request: ApprovalRequest, decision: ApprovalDecision
     ) -> tuple[ExecutionResult, ...]:
