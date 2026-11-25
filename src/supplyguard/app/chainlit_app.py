@@ -18,6 +18,7 @@ from supplyguard.contracts import (
     AuthorizationContext,
     CaseStatus,
     IncidentInput,
+    RecoveryAction,
     UIEvent,
     UIEventType,
 )
@@ -31,6 +32,7 @@ _service: CaseService | None = None
 # Failures the user can fix by changing the request; they are shown in the chat.
 USER_ERRORS = (CaseNotFoundError, LookupError, PermissionError, RequestRejectedError, ValueError)
 logger = logging.getLogger(__name__)
+STALE_REQUEST_MESSAGE = "This approval request is no longer current. Review the latest request."
 ACTION_FIELD_LABELS = {
     "arrival_day": "Arrival day",
     "component_id": "Component",
@@ -141,6 +143,43 @@ async def reject_request(action: cl.Action) -> None:
     await _decide(action, approved=False)
 
 
+@cl.action_callback("modify_request")
+async def modify_request(action: cl.Action) -> None:
+    """Change a quantity in the pending request. The change is revalidated by the approval
+    service and becomes a new request that needs a fresh approval; nothing is approved here."""
+    authorization: AuthorizationContext | None = cl.user_session.get("authorization")
+    pending: dict | None = cl.user_session.get("pending_approval")
+    if (
+        authorization is None
+        or _service is None
+        or pending is None
+        or pending["approval_request_id"] != action.payload.get("approval_request_id")
+    ):
+        await cl.Message(STALE_REQUEST_MESSAGE).send()
+        return
+    request = ApprovalRequest.model_validate(pending)
+    reply = await cl.AskUserMessage(content=quantity_question(request), timeout=300).send()
+    if not reply:
+        await cl.Message("No change was made. The current request still stands.").send()
+        return
+    try:
+        changed = modified_actions(request, str(reply.get("output", "")))
+    except ValueError as error:
+        await cl.Message(f"No change was made: {error}").send()
+        return
+    cl.user_session.set("pending_approval", None)
+    try:
+        decision = build_decision(pending, authorization, False, modified_actions=changed)
+        await _show(await _service.submit_approval(decision, authorization))
+    except USER_ERRORS as error:
+        cl.user_session.set("pending_approval", pending)
+        await cl.Message(f"The change could not be recorded: {error}").send()
+    except Exception:
+        logger.exception("Modification failed for request %s", request.approval_request_id)
+        cl.user_session.set("pending_approval", pending)
+        await cl.Message("The change could not be recorded. Please try again.").send()
+
+
 @cl.action_callback("start_new_case")
 async def start_new_case(action: cl.Action) -> None:
     cl.user_session.set("case_id", None)
@@ -247,7 +286,11 @@ async def _decide(action: cl.Action, *, approved: bool) -> None:
 
 
 def build_decision(
-    pending: dict, authorization: AuthorizationContext, approved: bool
+    pending: dict,
+    authorization: AuthorizationContext,
+    approved: bool,
+    *,
+    modified_actions: tuple[RecoveryAction, ...] = (),
 ) -> ApprovalDecision:
     """The decision names only the signed-in user and role, as CaseService requires."""
     return ApprovalDecision(
@@ -258,6 +301,46 @@ def build_decision(
         approver_user_ids=(authorization.user_id,),
         approver_roles=(authorization.role,),
         decided_at=datetime.now(UTC),
+        modified_actions=modified_actions,
+    )
+
+
+_QUANTITY_CHANGE = re.compile(r"^\s*(\S+)\s+(?:qty\s*=?\s*)?(\d[\d,.]*)\s*$", re.IGNORECASE)
+
+
+def quantity_question(request: ApprovalRequest) -> str:
+    choices = [
+        f"{a.action_id} (now {a.payload['qty']})" for a in request.actions if "qty" in a.payload
+    ]
+    example = request.actions[-1].action_id if request.actions else "ACT-1"
+    return (
+        "Which quantity should change? Reply with the action ID and the new quantity, "
+        f"for example: {example} 2500.\nQuantities you can change: {', '.join(choices)}."
+    )
+
+
+def modified_actions(request: ApprovalRequest, text: str) -> tuple[RecoveryAction, ...]:
+    """The request's actions with one quantity changed, from a reply like "ACT-BUY-S004 2500".
+    Prices and checks are redone by the approval service, never here."""
+    match = _QUANTITY_CHANGE.match(text)
+    if not match:
+        raise ValueError("write the action ID and the new quantity, for example ACT-BUY-S004 2500")
+    action_id = match.group(1)
+    quantity = int(match.group(2).replace(",", "").replace(".", ""))
+    target = next((a for a in request.actions if a.action_id == action_id), None)
+    if target is None:
+        raise ValueError(f"there is no action {action_id} in this request")
+    if "qty" not in target.payload:
+        raise ValueError(f"{action_id} has no quantity to change")
+    if quantity <= 0:
+        raise ValueError("the quantity must be positive")
+    if quantity == int(target.payload["qty"]):
+        raise ValueError(f"{action_id} already has quantity {quantity}")
+    return tuple(
+        a.model_copy(update={"payload": {**a.payload, "qty": quantity}})
+        if a.action_id == action_id
+        else a
+        for a in request.actions
     )
 
 
@@ -329,6 +412,7 @@ async def _prompt_approval(request: ApprovalRequest, intro: str) -> None:
         actions=[
             cl.Action(name="approve_request", payload=payload, label="Approve"),
             cl.Action(name="reject_request", payload=payload, label="Reject"),
+            cl.Action(name="modify_request", payload=payload, label="Modify quantity"),
         ],
     ).send()
 
