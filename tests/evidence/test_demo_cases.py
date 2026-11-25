@@ -298,6 +298,8 @@ def test_alternatives_passed_by_the_workflow_are_used(demo):
     """The workflow may pass the real alternatives from the impact result."""
     narrow = asyncio.run(demo.retrieve(GOLDEN, PM, ("S004",)))
     assert _suppliers_in(narrow) == {"S001", "S004"}
+    no_alternatives = asyncio.run(demo.retrieve(GOLDEN, PM, ()))
+    assert _suppliers_in(no_alternatives) == {"S001"}
 
 
 def test_each_injection_type_is_listed_once_per_document(bundle):

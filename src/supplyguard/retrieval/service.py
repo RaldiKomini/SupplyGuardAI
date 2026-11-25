@@ -226,7 +226,11 @@ class EvidenceService:
     ) -> EvidenceBundle:
         scopes = scopes_from(authorization)
         suppliers = [incident.supplier_id]
-        alternatives = alternative_supplier_ids or self.suppliers_mentioning(incident.component_id)
+        alternatives = (
+            self.suppliers_mentioning(incident.component_id)
+            if alternative_supplier_ids is None
+            else alternative_supplier_ids
+        )
         suppliers += [s for s in alternatives if s != incident.supplier_id]
 
         query = (
