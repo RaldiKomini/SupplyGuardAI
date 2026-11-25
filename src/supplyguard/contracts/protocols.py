@@ -121,6 +121,12 @@ class ApprovalService(Protocol):
         self, request: ApprovalRequest, decision: ApprovalDecision
     ) -> ApprovalDecision: ...
 
+    async def record_modification(
+        self, request: ApprovalRequest, decision: ApprovalDecision
+    ) -> ApprovalRequest:
+        """Validate the edit and commit its decision and replacement request together."""
+        ...
+
     async def revalidate(
         self, request: ApprovalRequest, modified_actions: tuple[RecoveryAction, ...]
     ) -> ApprovalRequest: ...

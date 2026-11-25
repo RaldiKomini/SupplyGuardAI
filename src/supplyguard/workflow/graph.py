@@ -4,7 +4,7 @@ intake -> investigate_impact -> collect_evidence -> deep_investigation -> plan_r
 -> request_approval
 -> await_approval (pause) -> record_decision -> execute (approved) -> finish
                                              -> finish (rejected)
-                         -> revalidate (edit) -> record_decision -> await_approval
+                         -> revalidate and record (edit) -> await_approval
 finish -> write_report (report + approved memory)
 A finished case answers new messages in follow_up instead of starting intake again.
 
@@ -23,7 +23,6 @@ from supplyguard.workflow.approval import (
     make_report_step,
     route_after_await,
     route_after_record,
-    route_after_revalidation,
 )
 from supplyguard.workflow.follow_up import make_follow_up_step
 from supplyguard.workflow.intake.nodes import (
@@ -111,11 +110,7 @@ def build_graph(
             "revalidate": "revalidate",
         },
     )
-    graph.add_conditional_edges(
-        "revalidate",
-        route_after_revalidation,
-        {"await_approval": "await_approval", "record_decision": "record_decision"},
-    )
+    graph.add_edge("revalidate", "await_approval")
     graph.add_conditional_edges(
         "record_decision",
         route_after_record,
