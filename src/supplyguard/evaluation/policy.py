@@ -405,18 +405,24 @@ async def _notice_beats_email_with_sensitivity(
 def _penalties_counted_once(inputs: PlanningInputs, plan: RecoveryPlan, policy) -> list[str]:
     """Penalties are not added to recovery cost or to revenue at risk, which stay separate.
 
-    The cost service caps one order's penalty at 5% of its value: even a doubled delay at
-    the highest weekly rate stays within it, so a penalty cannot be counted twice there."""
+    A proposed option costs exactly its actions, and the revenue left at risk after an
+    option never exceeds the case exposure. The cost service caps one order's penalty at 5%
+    of its value: even a doubled delay at the highest weekly rate stays within it, so a
+    penalty cannot be counted twice there."""
     failures = []
+    exposure = inputs.impact.revenue_at_risk_eur
     for option in plan.options:
         actions_total = sum((a.cost_eur for a in option.actions), Decimal(0))
-        if option.recovery_cost_eur != actions_total:
+        if option.actions and option.recovery_cost_eur != actions_total:
             failures.append(
                 f"{option.option_id} recovery cost {option.recovery_cost_eur} is not the sum of "
                 f"its actions {actions_total}"
             )
-        if option.revenue_at_risk_eur != inputs.impact.revenue_at_risk_eur:
-            failures.append(f"{option.option_id} changes the revenue at risk")
+        if option.revenue_at_risk_eur > exposure:
+            failures.append(
+                f"{option.option_id} revenue at risk {option.revenue_at_risk_eur} exceeds the "
+                f"case exposure {exposure}"
+            )
     tier_one = [o for o in inputs.impact.at_risk_orders if o.priority_tier == 1]
     for order in tier_one:
         penalty = inputs.costs.estimate_late_penalty(
