@@ -262,3 +262,60 @@ def test_approved_memory_survives_a_restart_with_its_finding(demo, support_data)
     # and it stays out of reach for users without the 'internal' scope
     viewer = asyncio.run(EvidenceResolutionMemoryStore(restarted).search(query, USERS["viewer"]))
     assert "MEM-DEMO-MC17" not in {m.memory_id for m in viewer}
+
+
+# ---------------------------------------------------------------- 7. Only what the plan uses
+# Elena's review of the full MC-17 run: the report listed contracts of unrelated suppliers
+# (S007, S019, S023, S029, S039, S057), because every contract template mentions
+# "reference component MC-17". The bundle must only hold the incident supplier, its
+# alternatives and the procedures.
+MC17_SUPPLIERS = {
+    "S001",
+    "S002",
+    "S003",
+    "S004",
+    "S005",
+}  # Atlas + Helios, Borealis, Cordillera, Delta
+
+
+def _suppliers_in(bundle: EvidenceBundle) -> set[str]:
+    ids = {i.source.source_id for i in bundle.items}
+    return {sid.split("-")[2] for sid in ids if sid.startswith(("DOC-CON-", "DOC-QUA-"))}
+
+
+def test_bundle_holds_only_the_incident_supplier_alternatives_and_procedures(bundle):
+    ids = {i.source.source_id for i in bundle.items}
+    assert _suppliers_in(bundle) <= MC17_SUPPLIERS
+    for unrelated in ("S007", "S019", "S023", "S029", "S039", "S057"):
+        assert not any(unrelated in sid for sid in ids), unrelated
+    assert {"DOC-NOT-ATLAS-MC17", "DOC-EM-ATLAS-01", "DOC-NOT-HELIOS-PRICE"} <= ids
+    assert {"DOC-EM-BOREALIS-01", "DOC-EM-CORDILLERA-01", "DOC-EM-DELTA-01"} <= ids
+    assert any(sid.startswith("DOC-PRO-") for sid in ids)
+    assert 20 <= len(bundle.items) <= 25
+
+
+def test_alternatives_passed_by_the_workflow_are_used(demo):
+    """The workflow may pass the real alternatives from the impact result."""
+    narrow = asyncio.run(demo.retrieve(GOLDEN, PM, ("S004",)))
+    assert _suppliers_in(narrow) == {"S001", "S004"}
+
+
+def test_each_injection_type_is_listed_once_per_document(bundle):
+    keys = [(f.sources[0].source_id, f.finding_type) for f in bundle.security_findings]
+    assert len(keys) == len(set(keys))
+    twice = next(
+        f
+        for f in bundle.security_findings
+        if f.finding_type == "prompt_injection.system_impersonation"
+        and f.sources[0].source_id == "DOC-NOT-HELIOS-PRICE"
+    )
+    assert "found 2 times" in twice.message
+    assert twice.blocked
+
+
+def test_scan_also_lists_each_injection_type_once(support_data):
+    notice = support_data / "documents" / "supplier_notice" / "DOC-NOT-HELIOS-PRICE.md"
+    findings = GuardrailContentSafetyService().scan(notice.read_text(encoding="utf-8"), "EV-HELIOS")
+    types = [f.finding_type for f in findings]
+    assert len(types) == len(set(types))
+    assert all(f.blocked for f in findings)
