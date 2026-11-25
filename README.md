@@ -114,3 +114,9 @@ Raldi's component now includes idempotent PostgreSQL loading, deterministic impa
 Setup, formulas, failure behaviour, and integration instructions are in [the operational-intelligence guide](docs/architecture/operational-intelligence.md). The main decisions are recorded in [ADR 0002](docs/decisions/0002-operational-data-authority.md) and [ADR 0003](docs/decisions/0003-postgres-and-neo4j-boundary.md).
 
 The component's measurable value hypothesis, KPIs, targets, and attribution limits are documented in [the operational-intelligence business-value assessment](docs/business-value/operational-intelligence.md).
+
+## Recovery, approval and procurement
+
+Athanasia's component plans the recovery, challenges it, binds human approval to the exact action payload, and executes approved actions once through the procurement MCP. It implements the shared `RecoveryPlanningService`, `ApprovalService` and `ProcurementExecutionService` boundaries.
+
+How to run the procurement MCP, the traced service calls, and the LangSmith evaluation experiment are in [the recovery, approval and procurement guide](docs/architecture/recovery-approval-procurement.md). The approval and execution decision is recorded in [ADR 0005](docs/decisions/0005-exact-payload-approval-and-run-once-execution.md).
