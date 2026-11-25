@@ -204,10 +204,12 @@ uv run python scripts/benchmark_retrieval.py --offline      # in-memory stand-in
 uv run python -m supplyguard.guardrails.red_team support-data docs/evidence/red_team_findings.md
 ```
 
-`EvidenceService.from_support_data(..., index=False)` (what the workflow runtime uses) still
-indexes any document or memory chunk that is missing from the store, so a fresh database
-is filled on first start. Stored chunks are never rewritten that way; run
-`scripts/index_documents.py` (or `index=True`) to refresh changed documents.
+`EvidenceService.from_support_data(..., index=False)` (what the workflow runtime uses) re-indexes
+every document or memory chunk that is missing from the store or differs from the current
+files (text or metadata), so a fresh or out-of-date database is fixed on start; unchanged
+chunks are not written again. Independently of that, the files on disk always win: a vector
+hit is replaced by the current chunk from disk, so scope, status, version and text never
+come from an older copy in the database, and documents deleted from disk are never returned.
 
 Check the deployed pgvector and ChromaDB services with the supplied documents (indexes
 them, then checks scopes inside the database, injection flagging at the workflow boundary,
