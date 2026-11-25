@@ -73,10 +73,11 @@ Owns:
 - Approval-tier validation and approval records.
 - Procurement MCP read and write operations.
 - Idempotent action execution and outcome recording.
+- LangSmith tracing and experiment execution.
 
 Does not own UI approval controls, deterministic calculations, workflow routing, retrieval, or service deployment.
 
-### Elpida — product surface and delivery
+### Elpiniki — product surface and delivery
 
 Branch: `feat/platform-evaluation-delivery`
 
@@ -86,7 +87,6 @@ Owns:
 - Authentication, sessions, roles, case access, and authorization context.
 - Application-service boundary.
 - Docker, configuration, health checks, and startup order.
-- LangSmith tracing and experiment execution.
 - The 105-case evaluation harness and final quality report.
 - Root documentation, demo script, release checklist, and limitations.
 
@@ -175,7 +175,7 @@ A component change is done only when:
 Components integrate through the protocols in `src/supplyguard/contracts/protocols.py`.
 
 - Elena connects the workflow-level calls.
-- Elpida connects the application and deployment boundaries.
+- Elpiniki connects the application and deployment boundaries.
 - Each domain owner remains responsible for the correctness of their returned contract.
 
 No component may reach into another owner's database tables or internal classes when a public repository, service, or protocol exists.

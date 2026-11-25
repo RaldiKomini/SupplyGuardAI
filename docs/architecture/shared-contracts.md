@@ -56,9 +56,9 @@ them to the approval service for revalidation and a new approval request.
 | Impact, dependencies, and external risk | Raldi |
 | Evidence, conflicts, and content security | George |
 | Options, approval, and execution | Athanasia |
-| UI and evaluation events | Elpida |
-| Authorization context and case listing | Elpida |
-| Workflow entry points (`CaseWorkflowService`) | Elena implements, Elpida consumes |
+| UI and evaluation events | Elpiniki |
+| Authorization context and case listing | Elpiniki |
+| Workflow entry points (`CaseWorkflowService`) | Elena implements, Elpiniki consumes |
 
 ## Authorization
 

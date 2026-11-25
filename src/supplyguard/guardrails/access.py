@@ -1,6 +1,6 @@
 """Access-scope filtering.
 
-Elpida's application layer authenticates the user and produces an
+Elpiniki's application layer authenticates the user and produces an
 AuthorizationContext with the user's allowed document scopes. We only consume
 those scopes: we do not decide who the user is.
 
@@ -20,7 +20,7 @@ KNOWN_SCOPES = {"public", "internal", "procurement", "finance-confidential"}
 
 
 def scopes_from(auth_context) -> set[str]:
-    """Accept Elpida's AuthorizationContext, a dict, or a plain list/set of scopes.
+    """Accept Elpiniki's AuthorizationContext, a dict, or a plain list/set of scopes.
 
     We look for an attribute or key called `allowed_scopes` (or `document_scopes`).
     Anything we do not recognise gives NO access, never full access.
