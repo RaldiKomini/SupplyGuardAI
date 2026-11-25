@@ -61,7 +61,7 @@ Result on 25 November 2026 (experiment `supplyguard-eval-6e86a4f0`):
 | restart_recovery | 6 | 0 | 0 | 6 |
 | follow_up | 4 | 0 | 0 | 4 |
 
-All 85 runnable cases pass and none fail. The policy cases check access scopes on finance-confidential evidence (EV-0097), contract-version and source precedence with a 16-day sensitivity (EV-0099, EV-0100) and penalty accounting (EV-0101) through the evidence and cost services. The 20 not runnable cases are reported, not skipped: ambiguity needs LLM intake extraction in the harness, and restart and follow-up need the case workflow wired into the harness. The earlier experiment `supplyguard-eval-1d7d6c53` (81 passing, policy 6/10) stays in LangSmith for comparison.
+This table records the earlier experiment. The current harness also runs ambiguity, follow-up, and restart cases. EV-0100 checks that intake reads the 16-day email before the workflow plans from the 12-day notice and calculates the 16-day sensitivity. EV-0101 checks that the follow-up and final report show the same total for the sourced order penalties. Evaluation approvals, simulated purchases, and case memory are isolated from the application. Append `--local` to run the same evaluation without uploading it to LangSmith.
 
 ## Tests
 

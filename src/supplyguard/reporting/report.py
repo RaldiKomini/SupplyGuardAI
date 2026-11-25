@@ -14,6 +14,7 @@ from supplyguard.contracts import (
     EvidenceBundle,
     ExecutionResult,
     ExecutionStatus,
+    ImpactReport,
     OperationalIntelligenceResult,
     RecoveryPlan,
     ResolutionMemory,
@@ -67,6 +68,17 @@ def _executed(results: list[ExecutionResult]) -> bool:
     return bool(results) and completed_action_count(results) == len(results)
 
 
+def late_penalty_summary(impact: ImpactReport) -> str | None:
+    traces = [trace for trace in impact.calculations if trace.calculation == "late_penalty_cost"]
+    if not traces:
+        return None
+    total = sum(trace.result for trace in traces)
+    return (
+        f"Tier-1 late-penalty scenario: EUR {total:,.2f} across {len(traces)} orders "
+        "if they ship at delayed replenishment. Each order is counted once (customer_orders.csv)."
+    )
+
+
 def build_incident_report(state: dict) -> str:
     incident, intelligence, evidence, plan, request, decision, results = _load(state)
     out = [f"# Incident report: case {state['case_id']}", ""]
@@ -109,6 +121,7 @@ def build_incident_report(state: dict) -> str:
 
     if intelligence:
         impact = intelligence.impact
+        penalties = late_penalty_summary(impact)
         out += [
             "## Operational impact",
             *_bullets(
@@ -124,10 +137,21 @@ def build_incident_report(state: dict) -> str:
                     "Revenue at risk (exposure, not an expected loss): "
                     f"{_eur(impact.revenue_at_risk_eur)}",
                     f"Sources: {_sources(impact.sources)}",
+                    *([penalties] if penalties else []),
                 ]
             ),
             "",
         ]
+
+    if sensitivities := state.get("delay_sensitivities"):
+        out += ["## Delay sensitivity", ""]
+        for scenario in sensitivities:
+            shortfall = scenario["projected_shortfall_units"]
+            estimate = (
+                f"{shortfall:,} units short" if shortfall is not None else "estimate unavailable"
+            )
+            out.append(f"- {scenario['delay_days']}-day delay: {estimate}.")
+        out.append("")
 
     if evidence:
         out += [

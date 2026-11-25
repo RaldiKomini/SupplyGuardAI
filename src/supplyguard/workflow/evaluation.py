@@ -23,12 +23,14 @@ from supplyguard.contracts import (
     ApprovalDecision,
     AuthorizationContext,
     IncidentInput,
+    OperationalIntelligenceResult,
     UIEvent,
     UIEventType,
 )
 from supplyguard.contracts.events import EvaluationResult, EvaluationStatus
 from supplyguard.contracts.protocols import MasterDataService
 from supplyguard.evaluation.cases import EvaluationCase
+from supplyguard.evaluation.runner import CaseEvaluator
 from supplyguard.workflow.intake.extraction import extract
 from supplyguard.workflow.intake.nodes import resolve
 from supplyguard.workflow.service import CaseWorkflow
@@ -213,3 +215,89 @@ class RestartEvaluator(_GoldenCase):
             await _collect(
                 workflow.submit_approval(decision, approver), stop_after if last else None
             )
+
+
+class WorkflowPolicyEvaluator(_GoldenCase):
+    """Verify that the case workflow enforces policy after the component checks pass."""
+
+    def __init__(
+        self, new_workflow: NewWorkflow, owner: AuthorizationContext, fallback: CaseEvaluator
+    ):
+        super().__init__(new_workflow, owner, ())
+        self.fallback = fallback
+
+    async def evaluate(self, case: EvaluationCase) -> EvaluationResult:
+        component_result = await self.fallback.evaluate(case)
+        if (
+            case.id not in {"EV-0100", "EV-0101"}
+            or component_result.status != EvaluationStatus.PASSED
+        ):
+            return component_result
+
+        incident = self.incident(case)
+        if case.id == "EV-0100":
+            incident = incident.model_copy(
+                update={
+                    "message": f"{case.message} The delayed supplier is Atlas Components for MC-17."
+                }
+            )
+        workflow = self.new_workflow(self.checkpointer_factory())
+        events = await _collect(workflow.start_case(incident, self.owner))
+        if not events or events[-1].event_type is not UIEventType.APPROVAL:
+            return _result(case, ["the case did not produce an approval request"])
+        state = await workflow.case_values(incident.case_id)
+        impact = OperationalIntelligenceResult.model_validate(state["intelligence"]).impact
+
+        if case.id == "EV-0100":
+            extracted = [
+                event.payload["incident"]["delay_days"]
+                for event in events
+                if event.stage == "read_incident" and event.payload.get("incident")
+            ]
+            sensitivity = {
+                entry["delay_days"]: entry["projected_shortfall_units"]
+                for entry in state.get("delay_sensitivities", [])
+            }
+            problems = []
+            if extracted != [16]:
+                problems.append(f"the intake did not read the 16-day email: {extracted}")
+            if state["incident"]["delay_days"] != 12 or impact.projected_shortfall_units != 5350:
+                problems.append("the workflow did not plan from the 12-day notice (5,350 units)")
+            if sensitivity.get(16) != 7150:
+                problems.append("the workflow did not retain the 16-day sensitivity (7,150 units)")
+            return _result(case, problems)
+
+        traces = [
+            trace for trace in impact.calculations if trace.calculation == "late_penalty_cost"
+        ]
+        order_ids = [
+            next((source.record_id for source in trace.sources if source.record_id), None)
+            for trace in traces
+        ]
+        if not order_ids or None in order_ids or len(order_ids) != len(set(order_ids)):
+            return _result(
+                case, ["the workflow must calculate one sourced penalty per eligible order"]
+            )
+        expected = f"EUR {sum(trace.result for trace in traces):,.2f} across {len(traces)} orders"
+        answers = await _collect(workflow.send_message(incident.case_id, case.message, self.owner))
+        request = events[-1].payload["request"]
+        rejection = ApprovalDecision(
+            case_id=incident.case_id,
+            approval_request_id=request["approval_request_id"],
+            payload_hash=request["payload_hash"],
+            approved=False,
+            approver_user_ids=(self.owner.user_id,),
+            approver_roles=(self.owner.role,),
+            decided_at=datetime.now(UTC),
+        )
+        final = await _collect(workflow.submit_approval(rejection, self.owner))
+        report = next((event.payload["report"] for event in final if "report" in event.payload), "")
+        problems = []
+        if not answers or expected not in answers[-1].message:
+            problems.append(f"the penalty follow-up did not report {expected}")
+        penalty_lines = [
+            line for line in report.splitlines() if "Tier-1 late-penalty scenario:" in line
+        ]
+        if len(penalty_lines) != 1 or expected not in penalty_lines[0]:
+            problems.append(f"the final report must show the penalty total once: {expected}")
+        return _result(case, problems)

@@ -11,13 +11,14 @@ Every component comes from its owner's package and is used only through its prot
 recipe follows the owners' integration tests. Settings come from the environment
 (.env.example): DATABASE_URL, NEO4J_URI/USER/PASSWORD, PROCUREMENT_MCP_URL,
 EXTERNAL_RISK_MCP_URL, EVIDENCE_BACKEND (memory, pgvector or chroma; default pgvector), and
-the model settings read by make_model().
+the model settings read by open_model().
 """
 
 import os
 from collections.abc import AsyncIterator, Sequence
 from contextlib import AsyncExitStack, asynccontextmanager
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
+from datetime import UTC, datetime
 from decimal import Decimal
 
 from langchain_core.language_models import BaseChatModel
@@ -38,9 +39,10 @@ from supplyguard.external_risk.mcp_client import McpRiskClient
 from supplyguard.external_risk.service import ExternalRiskService
 from supplyguard.graph.client import DependencyGraph
 from supplyguard.impact import DefaultOperationalIntelligenceService
-from supplyguard.llm import make_model
+from supplyguard.llm import open_model
 from supplyguard.planning.service import DeterministicRecoveryPlanningService
-from supplyguard.procurement.approvals import PostgresApprovalRecords
+from supplyguard.procurement.approvals import InMemoryApprovalRecords, PostgresApprovalRecords
+from supplyguard.procurement.execution import InMemoryExecutionStore, execute_approved
 from supplyguard.procurement.mcp_client import McpProcurementClient
 from supplyguard.repositories import OperationalRepository, PostgresMasterDataService
 from supplyguard.retrieval.adapters import (
@@ -52,6 +54,7 @@ from supplyguard.workflow.checkpoints import postgres_checkpointer
 from supplyguard.workflow.evaluation import (
     AmbiguityEvaluator,
     FollowUpEvaluator,
+    NewWorkflow,
     RestartEvaluator,
 )
 from supplyguard.workflow.service import CaseWorkflow
@@ -92,23 +95,63 @@ class WorkflowParts:
             model=self.model, services=self.services, checkpointer=checkpointer or self.checkpointer
         )
 
+    def evaluation_workflows(self) -> NewWorkflow:
+        """Keep evaluation writes out of the live application database and procurement MCP."""
+        records = InMemoryApprovalRecords()
+        execution_store = InMemoryExecutionStore()
+        policy = load_approval_policy(POLICIES_FILE)
+        costs = DeterministicCostService()
+        transfer_rate = Decimal(str(policies()["transfer_cost_eur_per_unit"]))
+
+        def build(checkpointer: BaseCheckpointSaver) -> CaseWorkflow:
+            async def case_context(case_id: str):
+                return await workflow.case_context(case_id)
+
+            services = replace(
+                self.services,
+                approval=DeterministicApprovalService(
+                    records,
+                    policy,
+                    case_context=case_context,
+                    costs=costs,
+                    transfer_cost_eur_per_unit=transfer_rate,
+                ),
+                execution=_EvaluationExecution(execution_store),
+                memory=_EvaluationMemory(),
+            )
+            workflow = CaseWorkflow(model=self.model, services=services, checkpointer=checkpointer)
+            return workflow
+
+        return build
+
     def evaluators(
         self, owner: AuthorizationContext, approvers: Sequence[AuthorizationContext]
     ) -> dict[EvaluationCategory, object]:
         """The workflow's harness evaluators on the real components."""
 
-        def shared() -> BaseCheckpointSaver:  # the approval service reads cases from here
-            return self.checkpointer
+        build = self.evaluation_workflows()
 
         return {
             EvaluationCategory.AMBIGUITY: AmbiguityEvaluator(self.model, self.services.master_data),
-            EvaluationCategory.FOLLOW_UP: FollowUpEvaluator(
-                self.new_workflow, owner, approvers, shared
-            ),
-            EvaluationCategory.RESTART_RECOVERY: RestartEvaluator(
-                self.new_workflow, owner, approvers, shared
-            ),
+            EvaluationCategory.FOLLOW_UP: FollowUpEvaluator(build, owner, approvers),
+            EvaluationCategory.RESTART_RECOVERY: RestartEvaluator(build, owner, approvers),
         }
+
+
+@dataclass(frozen=True)
+class _EvaluationExecution:
+    store: InMemoryExecutionStore
+
+    async def execute(self, request, decision):
+        return await execute_approved(request, decision, self.store, now=datetime.now(UTC))
+
+
+class _EvaluationMemory:
+    async def save(self, memory) -> None:
+        pass
+
+    async def search(self, query, authorization, limit=3):
+        return ()
 
 
 @asynccontextmanager
@@ -170,6 +213,8 @@ async def open_workflow_parts(model: BaseChatModel | None = None) -> AsyncIterat
             content_safety=GuardrailContentSafetyService(),
         )
         saver = await stack.enter_async_context(postgres_checkpointer(database_url))
-        parts = WorkflowParts(model=model or make_model(), services=services, checkpointer=saver)
+        if model is None:
+            model = await stack.enter_async_context(open_model())
+        parts = WorkflowParts(model=model, services=services, checkpointer=saver)
         reader = parts.new_workflow()  # any workflow on the shared checkpoints reads every case
         yield parts

@@ -1,6 +1,6 @@
 """The case workflow graph.
 
-intake -> investigate_impact -> collect_evidence -> deep_investigation -> plan_recovery
+intake -> collect_evidence -> investigate_impact -> deep_investigation -> plan_recovery
 -> request_approval
 -> await_approval (pause) -> record_decision -> execute (approved) -> finish
                                              -> finish (rejected)
@@ -72,7 +72,7 @@ def build_graph(
         "read_incident",
         route_after_read,
         {
-            "confirmed": "investigate_impact",
+            "confirmed": "collect_evidence",
             "ask_clarification": "ask_clarification",
             "stop_intake": "stop_intake",
         },
@@ -87,9 +87,9 @@ def build_graph(
     graph.add_conditional_edges(
         "investigate_impact",
         route_after_impact,
-        {"collect_evidence": "collect_evidence", "stop_case": "stop_case"},
+        {"deep_investigation": "deep_investigation", "stop_case": "stop_case"},
     )
-    graph.add_edge("collect_evidence", "deep_investigation")
+    graph.add_edge("collect_evidence", "investigate_impact")
     graph.add_edge("deep_investigation", "plan_recovery")
     graph.add_conditional_edges(
         "plan_recovery",

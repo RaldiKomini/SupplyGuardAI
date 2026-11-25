@@ -21,6 +21,7 @@ class CaseState(TypedDict, total=False):
     clarification_rounds: int
     intelligence: dict | None  # OperationalIntelligenceResult (Raldi)
     evidence: dict | None  # EvidenceBundle (George)
+    delay_sensitivities: list[dict]  # alternate delay and its deterministic projected shortfall
     investigation_findings: list[dict]  # InvestigationFinding from the Deep Agent
     plan: dict | None  # RecoveryPlan (Athanasia)
     approval_request: dict | None  # ApprovalRequest: the exact payload shown to the approver

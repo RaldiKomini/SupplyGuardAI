@@ -54,14 +54,14 @@ def to_evidence_item(
 
 
 def to_evidence_conflict(conflict: Conflict) -> EvidenceConflict:
-    """The shared contract has no numeric fields, so the values are in `description`
-    (e.g. 'expedite_fee_pct: planning value 6 from DOC-CON-S004-v1 ... says 10 ...')."""
     alternatives = conflict.alternatives
     return EvidenceConflict(
         subject=f"{conflict.supplier_id}.{conflict.fact_name}",
         description=conflict.explanation,
         selected_evidence_id=conflict.planning_source.chunk_id or None,
         conflicting_evidence_ids=tuple(a["source"].chunk_id for a in alternatives),
+        planning_value=conflict.planning_value,
+        sensitivity_values=tuple(a["value"] for a in alternatives if a["use_as"] == "sensitivity"),
         resolution_reason=(
             "Source precedence (DOC-PRO-02): contract > qualification > notice > e-mail > chat; "
             "a later effective date supersedes an earlier version. "

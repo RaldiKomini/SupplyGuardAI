@@ -124,6 +124,23 @@ async def test_investigation_builds_traceable_golden_result(atlas_incident) -> N
 
 
 @pytest.mark.asyncio
+async def test_late_penalty_scenario_counts_each_tier_one_order_once(atlas_incident) -> None:
+    class OrdersWithPenalties(FakeRepository):
+        async def open_orders(self, product_ids, scenario_date):
+            row = (await super().open_orders(product_ids, scenario_date))[0]
+            tier_one = replace(row, weekly_late_penalty_percentage=Decimal(1))
+            tier_two = replace(tier_one, order_id="O-2", priority_tier=2)
+            return tier_one, tier_one, tier_two
+
+    service = DefaultOperationalIntelligenceService(OrdersWithPenalties(), FakeGraph(), FakeRisk())
+    result = await service.investigate(atlas_incident)
+
+    [estimate] = [t for t in result.impact.calculations if t.calculation == "late_penalty_cost"]
+    assert estimate.sources[0].record_id == "O-1"
+    assert estimate.result == Decimal("50.00")
+
+
+@pytest.mark.asyncio
 async def test_demand_only_counts_days_overlapping_the_arrival_window(atlas_incident) -> None:
     class UnevenSchedule(FakeRepository):
         async def weekly_component_demand(self, component_id, start_date, end_date):

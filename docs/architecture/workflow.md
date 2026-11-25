@@ -18,7 +18,7 @@ START ─(new case)──────> read_incident ──(unclear, max 2x)─�
   │                           └─(still unclear)─> stop_intake
   │                      (confirmed)
   │                           ▼
-  │        investigate_impact ─> collect_evidence ─> deep_investigation ─> plan_recovery
+  │        collect_evidence ─> investigate_impact ─> deep_investigation ─> plan_recovery
   │              │ fails                                                   │ fails, no option,
   │              └──────────────────────> stop_case <──────────────────────┘ blocking finding
   │                                                                          or blocking warning

@@ -21,7 +21,7 @@ from supplyguard.contracts import (
     RecoveryPlan,
     SecurityFinding,
 )
-from supplyguard.reporting.report import completed_action_count
+from supplyguard.reporting.report import completed_action_count, late_penalty_summary
 from supplyguard.workflow.services import WorkflowServices
 from supplyguard.workflow.settings import policy_spending_cap
 from supplyguard.workflow.state import CaseState
@@ -141,11 +141,16 @@ async def answer_follow_up(
         return "Please restate your question without the flagged instruction.", findings
     if not state.get("incident"):
         return "There is no confirmed incident in this case yet.", ()
+    if "penalt" in question.casefold() and state.get("intelligence"):
+        impact = OperationalIntelligenceResult.model_validate(state["intelligence"]).impact
+        summary = late_penalty_summary(impact)
+        return summary or "No late penalty was estimated. Each eligible order is counted once.", ()
     classifier = model.with_structured_output(FollowUpIntent, method="json_schema", strict=True)
     intent = await classifier.ainvoke(INTENT_PROMPT.format_messages(question=question))
 
     if intent.kind == "change_spending_cap" and intent.new_spending_cap_eur and state.get("plan"):
-        return (await _what_if_cap(services, state, Decimal(str(intent.new_spending_cap_eur)))), ()
+        answer = await _what_if_cap(services, state, Decimal(str(intent.new_spending_cap_eur)))
+        return answer, ()
     if intent.kind == "resume":
         return _recap(state), ()
     record = {key: state.get(key) for key in RECORD_KEYS}
