@@ -180,6 +180,15 @@ def build_incident_report(state: dict) -> str:
         "",
     ]
 
+    similar = [ResolutionMemory.model_validate(m) for m in state.get("similar_cases") or []]
+    out += [
+        "## Similar past incidents",
+        *_bullets(
+            [f"{m.case_id} ({m.memory_id}): {m.strategy}. {m.approved_summary}" for m in similar]
+        ),
+        "",
+    ]
+
     findings = state.get("investigation_findings") or []
     out += [
         "## AI investigation notes (unverified)",
@@ -205,15 +214,9 @@ def build_incident_report(state: dict) -> str:
         recommended = next(
             (o for o in plan.options if o.option_id == plan.recommended_option_id), None
         )
-        out += [
-            "## Options compared",
-            *rows,
-            "",
-            "## Recommendation",
-            f"{recommended.name if recommended else 'No feasible option'}: "
-            f"{plan.recommendation_reason}",
-            "",
-        ]
+        name = recommended.name if recommended else "No feasible option"
+        reason = plan.recommendation_reason.removeprefix(f"{name}: ")  # it may repeat the name
+        out += ["## Options compared", *rows, "", "## Recommendation", f"{name}: {reason}", ""]
 
     approval = []
     if request:

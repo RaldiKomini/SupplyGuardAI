@@ -89,7 +89,8 @@ def build_graph(
         route_after_impact,
         {"deep_investigation": "deep_investigation", "stop_case": "stop_case"},
     )
-    graph.add_edge("collect_evidence", "investigate_impact")
+    graph.add_edge("collect_evidence", "recall_similar_cases")
+    graph.add_edge("recall_similar_cases", "investigate_impact")
     graph.add_edge("deep_investigation", "plan_recovery")
     graph.add_conditional_edges(
         "plan_recovery",

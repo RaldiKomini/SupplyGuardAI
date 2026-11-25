@@ -13,6 +13,7 @@ and it does not plan recovery (that is the planning component's job).
 
 import json
 import re
+from collections.abc import Sequence
 from typing import Literal
 
 from langchain_core.language_models import BaseChatModel
@@ -20,7 +21,7 @@ from langchain_core.tools import tool
 from langgraph.errors import GraphRecursionError
 from pydantic import BaseModel
 
-from supplyguard.contracts import EvidenceBundle, OperationalIntelligenceResult
+from supplyguard.contracts import EvidenceBundle, OperationalIntelligenceResult, ResolutionMemory
 
 # A hard bound on graph steps for one investigation. Each tool call takes several steps; a
 # typical run with the real model needs about 60 (measured: 17 tool calls, 34 messages).
@@ -33,6 +34,7 @@ Plan first with write_todos. Then use the read-only tools to look for what a rec
 must not miss: unusable stock, the plants that run out first, alternative suppliers that share
 an upstream manufacturer, expired certifications, conflicting documents, external risks.
 Delegate document checks to the evidence-checker sub-agent. Keep working notes in files.
+Check similar_past_cases for how earlier, similar disruptions were resolved.
 
 Rules for findings:
 - State a fact only as a tool returned it: supplier IDs, certification status, dates,
@@ -81,13 +83,19 @@ class InvestigationIncomplete(Exception):
         self.findings = findings
 
 
-def _tools(intelligence: OperationalIntelligenceResult, evidence: EvidenceBundle, findings: list):
+def _tools(
+    intelligence: OperationalIntelligenceResult,
+    evidence: EvidenceBundle,
+    findings: list,
+    similar_cases: Sequence[ResolutionMemory] = (),
+):
     impact, dependencies = intelligence.impact, intelligence.dependencies
     certification = {s.supplier_id: s.certification_status for s in impact.supplier_capabilities}
     known_sources = {s.source_id for s in impact.sources}
     known_sources |= {s.source_id for f in dependencies.findings for s in f.sources}
     known_sources |= {s.source_id for r in intelligence.external_risks for s in r.sources}
     known_sources |= {i.source.source_id for i in evidence.items}
+    known_sources |= {m.memory_id for m in similar_cases}
 
     @tool
     def impact_summary() -> str:
@@ -159,7 +167,19 @@ def _tools(intelligence: OperationalIntelligenceResult, evidence: EvidenceBundle
         )
         return "Recorded."
 
-    return [impact_summary, supplier_options, dependency_findings, evidence_items, record_finding]
+    @tool
+    def similar_past_cases() -> str:
+        """Approved resolutions of earlier, similar cases (cite them by memory_id)."""
+        return json.dumps([m.model_dump(mode="json", exclude={"sources"}) for m in similar_cases])
+
+    return [
+        impact_summary,
+        supplier_options,
+        dependency_findings,
+        evidence_items,
+        similar_past_cases,
+        record_finding,
+    ]
 
 
 def build_investigation_agent(model: BaseChatModel, tools: list):
@@ -188,9 +208,12 @@ async def investigate_case(
     model: BaseChatModel,
     intelligence: OperationalIntelligenceResult,
     evidence: EvidenceBundle,
+    similar_cases: Sequence[ResolutionMemory] = (),
 ) -> list[InvestigationFinding]:
     findings: list[InvestigationFinding] = []
-    agent = build_investigation_agent(model, _tools(intelligence, evidence, findings))
+    agent = build_investigation_agent(
+        model, _tools(intelligence, evidence, findings, similar_cases)
+    )
     try:
         await agent.ainvoke(
             {"messages": [("user", "Investigate this case and record your findings.")]},

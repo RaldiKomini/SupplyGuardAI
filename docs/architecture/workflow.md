@@ -18,10 +18,12 @@ START ─(new case)──────> read_incident ──(unclear, max 2x)─�
   │                           └─(still unclear)─> stop_intake
   │                      (confirmed)
   │                           ▼
-  │        collect_evidence ─> investigate_impact ─> deep_investigation ─> plan_recovery
-  │              │ fails                                                   │ fails, no option,
-  │              └──────────────────────> stop_case <──────────────────────┘ blocking finding
-  │                                                                          or blocking warning
+  │        collect_evidence ─> recall_similar_cases ─> investigate_impact ─┐
+  │                                                     (fails) ──> stop_case
+  │        ┌───────────────────────────────────────────────────────────────────┘
+  │        └─> deep_investigation ─> plan_recovery ─(fails, no option, blocking
+  │                                         │       finding or warning)─> stop_case
+  │                                         ▼
   │                                     request_approval ─> await_approval ⏸ ─> record_decision
   │                                                             ▲   │ wrong request    │
   │                                                             └───┘                  │
@@ -37,6 +39,7 @@ START ─(new case)──────> read_incident ──(unclear, max 2x)─�
 | `read_incident` | model (structured extraction), `MasterDataService` | asks; stops after 2 rounds |
 | `investigate_impact` | `OperationalIntelligenceService` (Raldi) | stop: nothing can be planned without numbers |
 | `collect_evidence` | `EvidenceService` with the user's `AuthorizationContext` (George) | continue with no evidence, error recorded |
+| `recall_similar_cases` | `ResolutionMemoryStore.search` within the user's scopes (George) | continue with no past cases, error recorded |
 | `deep_investigation` | Deep Agent over the collected data | continue; findings so far kept |
 | `plan_recovery` | `RecoveryPlanningService` (Athanasia) | stop |
 | `request_approval` … `execute` | `ApprovalService`, `ProcurementExecutionService` (Athanasia) | refused decision or invalid edit: back to the pause |
@@ -145,6 +148,9 @@ from them shares the checkpoints, which is what the restart evaluator relies on.
 - The incident report is built from templates over the saved case, so every number and source
   comes from the owning component. After a successful execution the approved summary is saved
   as `ResolutionMemory` (`MEM-<case_id>`, replaced if written again).
+- The next case searches these memories (`recall_similar_cases`): up to three distinct
+  earlier resolutions go to the Deep Agent (`similar_past_cases` tool) and into the report's
+  "Similar past incidents" section. They inform; they never change the plan.
 
 ## Configuration
 
@@ -161,5 +167,6 @@ Desktop running adds the real PostgreSQL restart test.
 
 - "Can we protect our highest-priority customers?" is answered from the saved impact data; a
   dedicated reallocation calculation belongs to planning.
-- The sample incident report (`docs/architecture/sample-incident-report.md`) was produced with
-  test stand-ins; regenerate it with the full stack before the final demonstration.
+- The AI investigation notes in the [sample incident report](sample-incident-report.md) (a real
+  full-stack run) can still contain wrong comparisons; they are marked unverified and never
+  change the plan.

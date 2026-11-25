@@ -14,10 +14,13 @@ from supplyguard.contracts import (
     EvidenceBundle,
     OperationalIntelligenceResult,
     RecoveryPlan,
+    ResolutionMemory,
     Severity,
 )
 from supplyguard.workflow.services import WorkflowServices
 from supplyguard.workflow.state import CaseState
+
+SIMILAR_CASES = 3  # earlier resolutions shown to the agent and in the report
 
 
 def make_investigation_steps(services: WorkflowServices, model: BaseChatModel) -> dict:
@@ -58,6 +61,27 @@ def make_investigation_steps(services: WorkflowServices, model: BaseChatModel) -
             }
         return {"evidence": evidence.model_dump(mode="json")}
 
+    async def recall_similar_cases(state: CaseState) -> dict:
+        """Approved resolutions of earlier cases (incident memory), searched within the user's
+        scopes. They inform the reviewer and the agent; they never change the plan."""
+        incident = ConfirmedIncident.model_validate(state["incident"])
+        authorization = AuthorizationContext.model_validate(state["authorization"])
+        query = (
+            f"{incident.component_id} {incident.supplier_name or incident.supplier_id} "
+            f"{incident.disruption_type.value.replace('_', ' ')} {incident.delay_days} days"
+        )
+        try:
+            memories = await services.memory.search(query, authorization, limit=3 * SIMILAR_CASES)
+        except Exception as error:  # memory is helpful, not required
+            return {"similar_cases": [], "errors": [f"Memory search failed: {error}"]}
+        # Repeated cases leave identical lessons; keep one of each so the slots differ.
+        distinct = {}
+        for m in memories:
+            if m.case_id != incident.case_id:
+                distinct.setdefault(m.approved_summary, m)
+        chosen = list(distinct.values())[:SIMILAR_CASES]
+        return {"similar_cases": [m.model_dump(mode="json") for m in chosen]}
+
     async def deep_investigation(state: CaseState) -> dict:
         """Extended investigation. It adds findings; planning does not depend on it, so a
         failure is recorded and the case continues."""
@@ -66,6 +90,9 @@ def make_investigation_steps(services: WorkflowServices, model: BaseChatModel) -
                 model,
                 OperationalIntelligenceResult.model_validate(state["intelligence"]),
                 EvidenceBundle.model_validate(state["evidence"]),
+                similar_cases=[
+                    ResolutionMemory.model_validate(m) for m in state.get("similar_cases") or []
+                ],
             )
         except InvestigationIncomplete as incomplete:  # keep what was found before the limit
             return {
@@ -90,6 +117,7 @@ def make_investigation_steps(services: WorkflowServices, model: BaseChatModel) -
     return {
         "investigate_impact": investigate_impact,
         "collect_evidence": collect_evidence,
+        "recall_similar_cases": recall_similar_cases,
         "deep_investigation": deep_investigation,
         "plan_recovery": plan_recovery,
     }

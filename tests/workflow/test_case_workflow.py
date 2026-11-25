@@ -5,7 +5,7 @@ from datetime import UTC, datetime
 from decimal import Decimal
 
 import pytest
-from conftest import FakeEvidence, FakeExecution, FakeIntelligence, FakePlanning
+from conftest import FakeEvidence, FakeExecution, FakeIntelligence, FakeMemory, FakePlanning
 from langgraph.checkpoint.memory import InMemorySaver
 from langgraph.types import Command
 
@@ -434,3 +434,62 @@ def test_report_labels_agent_notes_and_shows_plain_quantities(scripted_model, ma
 
     assert "## AI investigation notes (unverified)" in report
     assert "daily demand 450 units" in report  # not "450.0000"
+
+
+def test_a_new_case_recalls_the_approved_resolution_of_an_earlier_one(
+    scripted_model, make_services, quick_investigation
+):
+    """Approved memories are not only saved: the next similar case finds and uses them."""
+    services = make_services()
+    flow = CaseWorkflow(
+        model=scripted_model(GOLDEN, GOLDEN), services=services, checkpointer=InMemorySaver()
+    )
+    approve(flow, start(flow)[-1].payload["request"])  # CASE-1 approved -> memory MEM-CASE-1
+
+    second = IncidentInput(
+        case_id="CASE-2", user_id="u-pm-01", message="Atlas Components: 12-day delay on MC-17."
+    )
+    events = collect(flow.start_case(second, MARIA))
+
+    recalled = next(e for e in events if e.stage == "recall_similar_cases")
+    assert [m["memory_id"] for m in recalled.payload["similar_cases"]] == ["MEM-CASE-1"]
+    assert [m.memory_id for m in quick_investigation.similar_cases] == [
+        "MEM-CASE-1"
+    ]  # agent sees it
+
+
+def test_memory_search_failure_does_not_stop_the_case(scripted_model, make_services):
+    class BrokenMemory:
+        async def save(self, memory):
+            pass
+
+        async def search(self, query, authorization, limit=3):
+            raise RuntimeError("memory store unavailable")
+
+    events = start(workflow(scripted_model, make_services(memory=BrokenMemory())))
+
+    assert events[-1].event_type is UIEventType.APPROVAL  # still reaches approval
+
+
+def test_repeated_lessons_are_recalled_once(scripted_model, make_services):
+    from supplyguard.contracts import ResolutionMemory
+
+    memory = FakeMemory()
+    for case_id, summary in [
+        ("OLD-1", "Same lesson."),
+        ("OLD-2", "Same lesson."),
+        ("OLD-3", "Other."),
+    ]:
+        memory.saved[f"MEM-{case_id}"] = ResolutionMemory(
+            memory_id=f"MEM-{case_id}",
+            case_id=case_id,
+            component_id="MC-17",
+            supplier_id="S001",
+            strategy="Combined",
+            approved_summary=summary,
+        )
+
+    events = start(workflow(scripted_model, make_services(memory=memory)))
+
+    recalled = next(e for e in events if e.stage == "recall_similar_cases")
+    assert [m["case_id"] for m in recalled.payload["similar_cases"]] == ["OLD-1", "OLD-3"]
