@@ -8,6 +8,7 @@ import pytest
 from planning.golden import IMPACT
 
 from supplyguard.approval.policy import load_approval_policy
+from supplyguard.contracts import InventoryPosition
 from supplyguard.contracts.events import EvaluationStatus
 from supplyguard.evaluation.cases import EvaluationCategory, load_cases
 from supplyguard.evaluation.policy import CHECKS, PolicyEvaluator
@@ -97,3 +98,28 @@ async def test_cordillera_order_within_the_cap_fails_the_case() -> None:
 
     assert result.status is EvaluationStatus.FAILED
     assert any("cap" in finding for finding in result.findings)
+
+
+async def test_reclassifying_katowice_quarantine_as_usable_fails_the_case() -> None:
+    class MisclassifiedInventory:
+        async def investigate(self, incident):
+            inventory = tuple(
+                InventoryPosition.model_validate(
+                    {**position.model_dump(), "quarantined": 0, "usable": position.usable + 600}
+                )
+                if position.location_id == "W-KAT"
+                else position
+                for position in IMPACT.inventory
+            )
+            impact = IMPACT.model_copy(
+                update={
+                    "inventory": inventory,
+                    "total_usable_units": sum(position.usable for position in inventory),
+                }
+            )
+            return SimpleNamespace(impact=impact)
+
+    result = await PolicyEvaluator(MisclassifiedInventory(), POLICY).evaluate(_case("EV-0094"))
+
+    assert result.status is EvaluationStatus.FAILED
+    assert any("Katowice's 600 quarantined units" in finding for finding in result.findings)

@@ -146,19 +146,27 @@ def _helios_rejected(inputs: PlanningInputs, plan: RecoveryPlan, policy) -> list
 
 def _quarantine_not_used(inputs: PlanningInputs, plan, policy) -> list[str]:
     impact = inputs.impact
-    usable = sum(p.on_hand - p.reserved - p.quarantined for p in impact.inventory)
+    usable_by_location = {
+        p.location_id: p.on_hand - p.reserved - p.quarantined for p in impact.inventory
+    }
     failures = []
-    if impact.total_usable_units != usable:
+    katowice = next((p for p in impact.inventory if p.location_id == "W-KAT"), None)
+    if katowice is None:
+        failures.append("missing Katowice inventory for the 600-unit quarantine check")
+    elif (
+        katowice.quarantined != 600 or katowice.usable != katowice.on_hand - katowice.reserved - 600
+    ):
+        failures.append("Katowice's 600 quarantined units must be excluded from usable stock")
+    if impact.total_usable_units != sum(usable_by_location.values()):
         failures.append(
             f"usable stock {impact.total_usable_units} includes quarantined or reserved units"
         )
-    hub_units = {c.location_id: c.usable_units for c in impact.coverage}
     for option in plan.options:
         for action in option.actions:
             if action.action_type != RecoveryActionType.TRANSFER_INVENTORY:
                 continue
             source = action.payload["from_location"]
-            if int(action.payload["qty"]) > hub_units.get(source, 0):
+            if int(action.payload["qty"]) > usable_by_location.get(source, 0):
                 failures.append(f"{action.action_id} moves more than the usable stock at {source}")
     return failures
 
