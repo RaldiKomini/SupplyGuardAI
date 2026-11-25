@@ -16,7 +16,7 @@ from pydantic import ValidationError
 
 from supplyguard.contracts import AuthorizationContext, SecurityFinding
 from supplyguard.contracts.memory import ResolutionMemory
-from supplyguard.guardrails.injection import detect_injection
+from supplyguard.guardrails.injection import scan_text
 from supplyguard.guardrails.metadata import SAFE_IDENTIFIER
 from supplyguard.retrieval.contract_mapping import to_security_finding
 from supplyguard.retrieval.ingestion import parse_memory_chunk
@@ -25,13 +25,17 @@ from supplyguard.retrieval.service import EvidenceService
 
 class GuardrailContentSafetyService:
     """`ContentSafetyService`: scan untrusted text, e.g. a supplier notice pasted into the chat
-    (eval cases EV-0072..EV-0081). Same detector as document ingestion."""
+    (eval cases EV-0072..EV-0081). Same detector as document ingestion.
+
+    The text is only scanned, not rewritten: the finding says so ("reported and treated as
+    data, never obeyed"), unlike document findings, whose instructions are removed before
+    indexing. `blocked` stays True: the instruction is never acted on."""
 
     def scan(self, text: str, source_id: str) -> tuple[SecurityFinding, ...]:
         # source_id may come from the user; it is shown in finding messages, so it must
         # be a plain identifier (an attack hidden in it would otherwise reach a prompt).
         safe_id = source_id if SAFE_IDENTIFIER.match(source_id or "") else "untrusted_input"
-        return tuple(to_security_finding(f, None) for f in detect_injection(text, safe_id))
+        return tuple(to_security_finding(f, None) for f in scan_text(text, safe_id))
 
 
 class EvidenceResolutionMemoryStore:

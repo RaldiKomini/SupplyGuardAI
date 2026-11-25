@@ -19,6 +19,7 @@ from supplyguard.contracts import (
     UIEventType,
 )
 from supplyguard.contracts.planning import ApprovalDecision, ApprovalRequest
+from supplyguard.procurement.approvals import InMemoryApprovalRecords
 
 ROOT = Path(__file__).resolve().parents[2]
 CONFIG_PATH = ROOT / "config" / "access.toml"
@@ -136,6 +137,12 @@ class InMemoryApprovals:
 
     async def get_request(self, approval_request_id: str) -> ApprovalRequest | None:
         return self.requests.get(approval_request_id)
+
+    async def list_open_for(self, role: str, user_id: str) -> tuple[ApprovalRequest, ...]:
+        return tuple(r for r in self.requests.values() if role in r.required_approver_roles)
+
+    async def has_decided(self, approval_request_id: str, user_id: str) -> bool:
+        return False
 
 
 def _registry(environ: dict[str, str] | None = None) -> AccessRegistry:
@@ -288,6 +295,19 @@ def test_second_approver_reads_the_approval_request_but_not_the_case() -> None:
         asyncio.run(service.send_message("C-1", "hello", approver))
     with pytest.raises(CaseNotFoundError):
         asyncio.run(service.get_approval_request("AR-1", _context("u-an-01")))
+
+
+def test_review_opens_request_from_the_real_approval_store() -> None:
+    request = _approval_request()
+    store = InMemoryApprovalRecords()
+    asyncio.run(store.save_request(request))
+    service = CaseService(InMemoryWorkflow(), store)
+
+    found = asyncio.run(
+        service.get_approval_request(request.approval_request_id, _context("u-fc-01"))
+    )
+
+    assert found == request
 
 
 def test_approval_must_match_the_request_it_answers() -> None:

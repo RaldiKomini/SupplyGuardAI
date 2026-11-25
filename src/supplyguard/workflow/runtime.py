@@ -31,6 +31,7 @@ from supplyguard.contracts import (
     ConfirmedIncident,
     OperationalIntelligenceResult,
 )
+from supplyguard.contracts.protocols import ApprovalRequestSource
 from supplyguard.data.database import Database
 from supplyguard.evaluation.cases import EvaluationCategory
 from supplyguard.external_risk.mcp_client import McpRiskClient
@@ -108,6 +109,16 @@ class WorkflowParts:
                 self.new_workflow, owner, approvers, shared
             ),
         }
+
+
+@asynccontextmanager
+async def open_approval_source() -> AsyncIterator[ApprovalRequestSource]:
+    """The approval records CaseService reads, on the same database the workflow writes to."""
+    database = Database(os.environ["DATABASE_URL"])
+    try:
+        yield PostgresApprovalRecords(database)
+    finally:
+        await database.close()
 
 
 @asynccontextmanager
