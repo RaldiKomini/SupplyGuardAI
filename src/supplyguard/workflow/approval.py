@@ -65,6 +65,11 @@ def make_approval_steps(services: WorkflowServices) -> dict:
                 "revalidated_request": None,
                 "decision": None,
             }
+        missing = set(_request(state).required_approver_roles) - set(recorded.approver_roles)
+        if _decision(state).approved and not recorded.approved and missing:
+            # A two-role tier: this approval is stored; wait for the other approver.
+            text = f"Approval recorded. Still needed: {', '.join(sorted(missing))}."
+            return {"decision": None, "messages": [AIMessage(text)]}
         return {"decision": recorded.model_dump(mode="json")}
 
     async def revalidate(state: CaseState) -> dict:

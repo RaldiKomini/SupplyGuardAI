@@ -97,6 +97,7 @@ async def test_two_separate_approvers_authorise_and_retry_creates_no_duplicates(
     first = await setup.approvals.record_decision(
         request, _vote(request, "u-pm-01", "procurement_manager")
     )
+    assert not first.approved  # one of the two required roles
     early = await setup.procurement.execute(request, first)
     assert {r.status for r in early} == {ExecutionStatus.REJECTED}
     assert setup.store.results == {}
@@ -182,3 +183,36 @@ async def test_an_edit_creates_a_new_request_and_old_approvals_do_not_carry_over
             for a in new_request.actions
         )
         await setup.approvals.revalidate(new_request, oversized)
+
+
+async def test_a_superseded_request_cannot_execute(setup) -> None:
+    _, first = await _plan_and_request(setup)
+    await setup.approvals.record_decision(first, _vote(first, "u-pm-01", "procurement_manager"))
+    first_decision = await setup.approvals.record_decision(
+        first, _vote(first, "u-fc-01", "finance_controller")
+    )
+    edited = tuple(
+        a.model_copy(update={"payload": {**a.payload, "qty": 2000}})
+        if a.payload.get("supplier_id") == "S004"
+        else a
+        for a in first.actions
+    )
+    second = await setup.approvals.revalidate(first, edited)
+
+    stale = await setup.procurement.execute(first, first_decision)
+
+    assert {r.status for r in stale} == {ExecutionStatus.REJECTED}
+    assert "superseded by version 2" in stale[0].message
+    assert setup.store.results == {}
+
+    # 20,578 EUR after the edit: below 25,000, so the procurement manager alone approves.
+    assert second.required_approver_roles == ("procurement_manager",)
+    second_decision = await setup.approvals.record_decision(
+        second, _vote(second, "u-pm-01", "procurement_manager")
+    )
+    current = await setup.procurement.execute(second, second_decision)
+
+    assert {r.status for r in current} == {ExecutionStatus.SUCCEEDED}
+    purchase = next(a for a in second.actions if a.payload.get("supplier_id") == "S004")
+    assert purchase.payload["qty"] == 2000
+    assert len(setup.store.results) == len(second.actions)

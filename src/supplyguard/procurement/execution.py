@@ -96,6 +96,12 @@ async def _execute_one(
     return result
 
 
+def rejected_results(request: ApprovalRequest, message: str) -> tuple[ExecutionResult, ...]:
+    """One rejected result per action, for a request that must not run at all."""
+    rejected = ExecutionStatus.REJECTED
+    return tuple(_result(request, action, rejected, message) for action in request.actions)
+
+
 def _result(
     request: ApprovalRequest,
     action: RecoveryAction,

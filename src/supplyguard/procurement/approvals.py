@@ -34,6 +34,8 @@ class ApprovalRecords(Protocol):
         self, approval_request_id: str
     ) -> tuple[ApprovalRequest, ApprovalDecision] | None: ...
 
+    async def latest_version(self, case_id: str) -> int: ...
+
 
 class ApprovalRecordStore(ApprovalRecords, Protocol):
     """Approval records that can also be written (used by the approval service)."""
@@ -42,15 +44,18 @@ class ApprovalRecordStore(ApprovalRecords, Protocol):
 
     async def save_decision(self, approval_request_id: str, record: DecisionRecord) -> None: ...
 
-    async def latest_version(self, case_id: str) -> int: ...
-
 
 def decision_from_records(
     request: ApprovalRequest, records: Sequence[DecisionRecord]
 ) -> ApprovalDecision:
-    """Combine the stored decisions; any reject or modify means not approved."""
+    """Combine the stored decisions into one.
+
+    Approved only when nobody rejected or modified the request and the approving users
+    together hold every required role. One approval of a two-role tier is not enough.
+    """
     approvals = [r for r in records if r.decision == APPROVE]
-    approved = bool(approvals) and len(approvals) == len(records)
+    roles_covered = set(request.required_approver_roles) <= {r.role for r in approvals}
+    approved = roles_covered and len(approvals) == len(records)
     decided_at = max((r.decided_at for r in records), default=request.requested_at)
     return ApprovalDecision(
         approval_request_id=request.approval_request_id,
