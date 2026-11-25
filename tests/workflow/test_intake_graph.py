@@ -10,6 +10,11 @@ from supplyguard.workflow.graph import build_graph
 from supplyguard.workflow.intake.extraction import IncidentExtraction
 from supplyguard.workflow.intake.nodes import resolve
 
+AUTHORIZATION = {
+    "user_id": "u-pm-01",
+    "role": "procurement_manager",
+    "allowed_scopes": ["internal", "procurement", "public"],
+}
 GOLDEN = IncidentExtraction(
     supplier_query="Atlas Components",
     component_query="MC-17",
@@ -20,31 +25,38 @@ GOLDEN = IncidentExtraction(
 
 def start(graph, message: str, case_id: str = "CASE-1") -> tuple[dict, dict]:
     config = {"configurable": {"thread_id": case_id}}
-    first = {"case_id": case_id, "user_id": "u-pm-01", "messages": [("user", message)]}
+    first = {
+        "case_id": case_id,
+        "user_id": "u-pm-01",
+        "authorization": AUTHORIZATION,
+        "messages": [("user", message)],
+    }
     return config, asyncio.run(graph.ainvoke(first, config))
 
 
-def test_clear_message_is_confirmed_without_questions(master_data, scripted_model) -> None:
+def test_clear_message_is_confirmed_without_questions(make_services, scripted_model) -> None:
     graph = build_graph(
-        model=scripted_model(GOLDEN), master_data=master_data, checkpointer=InMemorySaver()
+        model=scripted_model(GOLDEN), services=make_services(), checkpointer=InMemorySaver()
     )
 
     _, result = start(graph, "Atlas Components announced a 12-day delay for MC-17 ...")
 
-    assert "__interrupt__" not in result
+    assert result["__interrupt__"][0].value["type"] == "approval"  # no clarification question
     assert result["incident"]["supplier_id"] == "S001"
     assert result["incident"]["component_id"] == "MC-17"
-    assert result["status"] == "in_progress"
+    assert result["plan"]["recommended_option_id"] == "OPT-1"  # continued to planning
 
 
-def test_ambiguous_supplier_asks_then_resumes_with_the_answer(master_data, scripted_model) -> None:
+def test_ambiguous_supplier_asks_then_resumes_with_the_answer(
+    make_services, scripted_model
+) -> None:
     model = scripted_model(
         IncidentExtraction(supplier_query="Atlas", component_query="MC-17", delay_days=12),
         IncidentExtraction(
             supplier_query="Atlas Components", component_query="MC-17", delay_days=12
         ),
     )
-    graph = build_graph(model=model, master_data=master_data, checkpointer=InMemorySaver())
+    graph = build_graph(model=model, services=make_services(), checkpointer=InMemorySaver())
 
     config, result = start(graph, "Atlas called, MC-17 will be 12 days late.")
     pause = result["__interrupt__"][0].value
@@ -56,11 +68,11 @@ def test_ambiguous_supplier_asks_then_resumes_with_the_answer(master_data, scrip
     assert any(m.content == "Atlas Components" for m in result["messages"])  # answer recorded
 
 
-def test_stops_after_two_unanswered_questions(master_data, scripted_model) -> None:
+def test_stops_after_two_unanswered_questions(make_services, scripted_model) -> None:
     vague = IncidentExtraction(supplier_query="Atlas")
     graph = build_graph(
         model=scripted_model(vague, vague, vague),
-        master_data=master_data,
+        services=make_services(),
         checkpointer=InMemorySaver(),
     )
 
@@ -82,12 +94,12 @@ def test_unknown_supplier_is_asked_with_the_component_suppliers(master_data) -> 
     assert questions[0].startswith("Which supplier is affected? This component is supplied by")
 
 
-def test_graph_cannot_be_built_without_a_checkpointer(master_data, scripted_model) -> None:
+def test_graph_cannot_be_built_without_a_checkpointer(make_services, scripted_model) -> None:
     """Without a checkpointer an answered question could not resume the case."""
     with pytest.raises(TypeError):
-        build_graph(model=scripted_model(GOLDEN), master_data=master_data)  # type: ignore[call-arg]
+        build_graph(model=scripted_model(GOLDEN), services=make_services())  # type: ignore[call-arg]
     with pytest.raises(ValueError, match="checkpointer"):
-        build_graph(model=scripted_model(GOLDEN), master_data=master_data, checkpointer=None)
+        build_graph(model=scripted_model(GOLDEN), services=make_services(), checkpointer=None)
 
 
 def test_supplier_not_linked_to_the_component_is_asked_not_accepted(master_data) -> None:
@@ -105,10 +117,12 @@ def test_supplier_not_linked_to_the_component_is_asked_not_accepted(master_data)
     assert "Atlas Components (S001)" in questions[0]  # the real suppliers are offered
 
 
-def test_unlinked_pair_pauses_the_graph_instead_of_confirming(master_data, scripted_model) -> None:
+def test_unlinked_pair_pauses_the_graph_instead_of_confirming(
+    make_services, scripted_model
+) -> None:
     unlinked = IncidentExtraction(supplier_query="S006", component_query="MC-17", delay_days=12)
     graph = build_graph(
-        model=scripted_model(unlinked), master_data=master_data, checkpointer=InMemorySaver()
+        model=scripted_model(unlinked), services=make_services(), checkpointer=InMemorySaver()
     )
 
     _, result = start(graph, "S006 says MC-17 is 12 days late.")
