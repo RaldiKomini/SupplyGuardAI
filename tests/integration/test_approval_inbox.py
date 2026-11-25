@@ -46,6 +46,8 @@ async def follow_decisions(url: str) -> None:
         )
         assert await records.has_decided(request_id, "u-pm-01") is True
         assert await records.has_decided(request_id, "u-fc-01") is False
+        assert await records.get_request(request_id) == REQUEST
+        assert await records.get_request("missing") is None
         assert await ids_for(records, "procurement_manager", "u-pm-01") == []
         assert await ids_for(records, "finance_controller", "u-fc-01") == [request_id]
 

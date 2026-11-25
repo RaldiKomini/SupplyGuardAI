@@ -120,3 +120,16 @@ def test_has_decided_is_false_for_a_request_with_no_decisions() -> None:
     store = _store_with(_request())
 
     assert asyncio.run(store.has_decided("req-1", PM)) is False
+
+
+def test_get_request_returns_the_saved_request() -> None:
+    request = _request()
+    store = _store_with(request)
+
+    assert asyncio.run(store.get_request("req-1")) == request
+
+
+def test_get_request_returns_none_for_an_unknown_id() -> None:
+    store = _store_with(_request())
+
+    assert asyncio.run(store.get_request("missing")) is None

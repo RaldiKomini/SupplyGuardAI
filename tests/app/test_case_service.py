@@ -19,6 +19,7 @@ from supplyguard.contracts import (
     UIEventType,
 )
 from supplyguard.contracts.planning import ApprovalDecision, ApprovalRequest
+from supplyguard.procurement.approvals import InMemoryApprovalRecords
 
 ROOT = Path(__file__).resolve().parents[2]
 CONFIG_PATH = ROOT / "config" / "access.toml"
@@ -294,6 +295,19 @@ def test_second_approver_reads_the_approval_request_but_not_the_case() -> None:
         asyncio.run(service.send_message("C-1", "hello", approver))
     with pytest.raises(CaseNotFoundError):
         asyncio.run(service.get_approval_request("AR-1", _context("u-an-01")))
+
+
+def test_review_opens_request_from_the_real_approval_store() -> None:
+    request = _approval_request()
+    store = InMemoryApprovalRecords()
+    asyncio.run(store.save_request(request))
+    service = CaseService(InMemoryWorkflow(), store)
+
+    found = asyncio.run(
+        service.get_approval_request(request.approval_request_id, _context("u-fc-01"))
+    )
+
+    assert found == request
 
 
 def test_approval_must_match_the_request_it_answers() -> None:

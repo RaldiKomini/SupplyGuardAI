@@ -143,6 +143,9 @@ class InMemoryApprovalRecords:
     async def has_decided(self, approval_request_id: str, user_id: str) -> bool:
         return any(r.user_id == user_id for r in self.decisions.get(approval_request_id, []))
 
+    async def get_request(self, approval_request_id: str) -> ApprovalRequest | None:
+        return self.requests.get(approval_request_id)
+
     async def load(
         self, approval_request_id: str
     ) -> tuple[ApprovalRequest, ApprovalDecision] | None:
@@ -225,6 +228,10 @@ class PostgresApprovalRecords:
                 )
             )
         return latest or 0
+
+    async def get_request(self, approval_request_id: str) -> ApprovalRequest | None:
+        saved = await self._load_with_records(approval_request_id)
+        return None if saved is None else saved[0]
 
     async def load(
         self, approval_request_id: str
