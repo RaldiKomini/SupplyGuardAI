@@ -18,7 +18,9 @@ from supplyguard.contracts import (
     AuthorizationContext,
     CaseStatus,
     CaseSummary,
+    ConfirmedIncident,
     IncidentInput,
+    OperationalIntelligenceResult,
     UIEvent,
     UIEventType,
 )
@@ -28,7 +30,11 @@ from supplyguard.workflow.services import WorkflowServices
 
 # What each step shows on screen: (event type, default message, state keys sent as payload).
 STEP_EVENTS = {
-    "read_incident": (UIEventType.PROGRESS, "Incident details read.", ("incident",)),
+    "read_incident": (
+        UIEventType.PROGRESS,
+        "Incident details read.",
+        ("incident", "security_findings"),
+    ),
     "investigate_impact": (UIEventType.PROGRESS, "Operational impact analysed.", ("intelligence",)),
     "collect_evidence": (UIEventType.EVIDENCE, "Documentary evidence collected.", ("evidence",)),
     "deep_investigation": (
@@ -203,6 +209,15 @@ class CaseWorkflow:
                 yield _event(
                     decision.case_id, UIEventType.PROGRESS, event.stage, "Decision submitted."
                 )
+
+    async def case_context(self, case_id: str):
+        """(ConfirmedIncident, ImpactReport) saved in a case. The approval service uses it to
+        revalidate edits against the same numbers the plan was built from."""
+        values = (await self._graph.aget_state(self._config(case_id))).values
+        if not values.get("incident") or not values.get("intelligence"):
+            raise LookupError(f"case {case_id} has no confirmed incident and impact yet")
+        incident = ConfirmedIncident.model_validate(values["incident"])
+        return incident, OperationalIntelligenceResult.model_validate(values["intelligence"]).impact
 
     async def list_cases(self, authorization: AuthorizationContext) -> Sequence[CaseSummary]:
         case_ids = []

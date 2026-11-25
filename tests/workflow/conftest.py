@@ -31,6 +31,7 @@ from supplyguard.contracts import (
     Severity,
     SupplierCandidate,
 )
+from supplyguard.retrieval.adapters import GuardrailContentSafetyService
 from supplyguard.workflow.services import WorkflowServices
 from supplyguard.workflow.settings import DATA_DIR
 
@@ -335,6 +336,7 @@ def make_services(master_data):
             "approval": FakeApproval(),
             "execution": FakeExecution(),
             "memory": FakeMemory(),
+            "content_safety": GuardrailContentSafetyService(),  # George's real detector
         }
         return WorkflowServices(**(parts | replacements))
 

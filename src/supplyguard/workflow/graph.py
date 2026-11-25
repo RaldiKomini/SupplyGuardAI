@@ -58,7 +58,9 @@ def build_graph(
     graph = StateGraph(CaseState)
 
     # Intake
-    graph.add_node("read_incident", make_read_incident(model, services.master_data))
+    graph.add_node(
+        "read_incident", make_read_incident(model, services.master_data, services.content_safety)
+    )
     graph.add_node("ask_clarification", ask_clarification)
     graph.add_node("stop_intake", stop_intake)
     graph.add_node("follow_up", make_follow_up_step(model, services))

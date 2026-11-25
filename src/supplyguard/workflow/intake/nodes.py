@@ -5,7 +5,7 @@ from langchain_core.messages import AIMessage, HumanMessage
 from langgraph.types import interrupt
 
 from supplyguard.contracts import CaseStatus, ComponentCandidate, SupplierCandidate
-from supplyguard.contracts.protocols import MasterDataService
+from supplyguard.contracts.protocols import ContentSafetyService, MasterDataService
 from supplyguard.workflow.intake.extraction import IncidentExtraction, confirm_incident, extract
 from supplyguard.workflow.intake.rules import (
     DELAY_QUESTION,
@@ -56,12 +56,19 @@ async def resolve(
     return supplier, component, questions
 
 
-def make_read_incident(model: BaseChatModel, master_data: MasterDataService):
+def make_read_incident(
+    model: BaseChatModel, master_data: MasterDataService, content_safety: ContentSafetyService
+):
     async def read_incident(state: CaseState) -> dict:
+        # The newest user message is untrusted text: report embedded instructions, never obey them.
+        latest = next(m for m in reversed(state["messages"]) if isinstance(m, HumanMessage))
+        findings = content_safety.scan(str(latest.content), "user_message")
+        found = {"security_findings": [f.model_dump(mode="json") for f in findings]}
+
         extraction = await extract(model, state["messages"])
         supplier, component, questions = await resolve(extraction, master_data)
         if questions:
-            return {"questions": questions, "status": CaseStatus.AWAITING_INPUT.value}
+            return {"questions": questions, "status": CaseStatus.AWAITING_INPUT.value, **found}
 
         first_message = next(m for m in state["messages"] if isinstance(m, HumanMessage))
         incident = confirm_incident(
@@ -76,6 +83,7 @@ def make_read_incident(model: BaseChatModel, master_data: MasterDataService):
             "incident": incident.model_dump(mode="json"),
             "questions": [],
             "status": CaseStatus.IN_PROGRESS.value,
+            **found,
         }
 
     return read_incident
