@@ -203,11 +203,14 @@ def build_incident_report(state: dict) -> str:
 
     if plan:
         rows = [
-            "| Option | Recovery cost | Revenue at risk | Uncovered units | Rejection reasons |",
+            "| Option | Recovery cost | Estimated revenue exposure | Uncovered units | "
+            "Rejection reasons |",
             "|---|---|---|---|---|",
         ]
         rows += [
-            f"| {o.name} | {_eur(o.recovery_cost_eur)} | {_eur(o.revenue_at_risk_eur)} | "
+            f"| {o.name} | {_eur(o.recovery_cost_eur)}"
+            f"{' (comparison only)' if o.rejection_reasons and not o.actions else ''} | "
+            f"{_eur(o.revenue_at_risk_eur)} | "
             f"{o.uncovered_units:,} | {'; '.join(o.rejection_reasons) or '-'} |"
             for o in plan.options
         ]
@@ -215,8 +218,18 @@ def build_incident_report(state: dict) -> str:
             (o for o in plan.options if o.option_id == plan.recommended_option_id), None
         )
         name = recommended.name if recommended else "No feasible option"
-        reason = plan.recommendation_reason.removeprefix(f"{name}: ")  # it may repeat the name
-        out += ["## Options compared", *rows, "", "## Recommendation", f"{name}: {reason}", ""]
+        reason = plan.recommendation_reason.removeprefix(f"{name}: ")
+        out += [
+            "## Options compared",
+            *rows,
+            "",
+            "Revenue estimates prorate the case exposure by uncovered units. "
+            "Customer due dates and order allocation are outside this estimate.",
+            "",
+            "## Recommendation",
+            f"{name}: {reason}",
+            "",
+        ]
 
     approval = []
     if request:
