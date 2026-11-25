@@ -5,7 +5,6 @@ from typing import Protocol
 
 from supplyguard.contracts.events import EvaluationResult, EvaluationStatus
 from supplyguard.evaluation.cases import EvaluationCase, EvaluationCategory
-from supplyguard.evaluation.tracing import CaseTracer, NullTracer
 
 
 class CaseEvaluator(Protocol):
@@ -23,13 +22,8 @@ class UnavailableEvaluator:
 
 
 class EvaluationRunner:
-    def __init__(
-        self,
-        evaluators: Mapping[EvaluationCategory, CaseEvaluator],
-        tracer: CaseTracer | None = None,
-    ) -> None:
+    def __init__(self, evaluators: Mapping[EvaluationCategory, CaseEvaluator]) -> None:
         self.evaluators = dict(evaluators)
-        self.tracer = tracer or NullTracer()
 
     async def run(self, cases: Sequence[EvaluationCase]) -> tuple[EvaluationResult, ...]:
         results: list[EvaluationResult] = []
@@ -41,23 +35,19 @@ class EvaluationRunner:
         return tuple(results)
 
     async def _run_one(self, case: EvaluationCase, evaluator: CaseEvaluator) -> EvaluationResult:
-        trace_id: str | None = None
         try:
-            with self.tracer.span(case) as span_trace_id:
-                trace_id = span_trace_id
-                result = await evaluator.evaluate(case)
+            result = await evaluator.evaluate(case)
         except Exception as error:
-            return _error(case, f"{type(error).__name__}: {error}", trace_id)
+            return _error(case, f"{type(error).__name__}: {error}")
         if result.evaluation_case_id != case.id or result.category != case.category.value:
-            return _error(case, "evaluator returned a result for a different case", trace_id)
-        return result.model_copy(update={"trace_id": trace_id})
+            return _error(case, "evaluator returned a result for a different case")
+        return result
 
 
-def _error(case: EvaluationCase, reason: str, trace_id: str | None = None) -> EvaluationResult:
+def _error(case: EvaluationCase, reason: str) -> EvaluationResult:
     return EvaluationResult(
         evaluation_case_id=case.id,
         category=case.category.value,
         status=EvaluationStatus.ERROR,
         findings=(reason,),
-        trace_id=trace_id,
     )

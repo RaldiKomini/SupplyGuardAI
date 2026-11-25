@@ -1,5 +1,3 @@
-from contextlib import contextmanager
-
 import pytest
 
 from supplyguard.contracts.events import EvaluationResult, EvaluationStatus
@@ -40,16 +38,6 @@ class WrongCaseEvaluator:
         )
 
 
-class RecordingTracer:
-    def __init__(self) -> None:
-        self.spans: list[str] = []
-
-    @contextmanager
-    def span(self, item: EvaluationCase):
-        self.spans.append(item.id)
-        yield f"trace-{item.id}"
-
-
 async def test_routes_each_case_to_its_category_evaluator() -> None:
     runner = EvaluationRunner({EvaluationCategory.GOLDEN: PassingEvaluator()})
     results = await runner.run([case("A", EvaluationCategory.GOLDEN)])
@@ -86,24 +74,6 @@ async def test_result_for_a_different_case_is_an_error() -> None:
 
     assert results[0].status is EvaluationStatus.ERROR
     assert results[0].evaluation_case_id == "A"
-
-
-async def test_trace_id_from_tracer_is_recorded_on_the_result() -> None:
-    tracer = RecordingTracer()
-    runner = EvaluationRunner({EvaluationCategory.GOLDEN: PassingEvaluator()}, tracer=tracer)
-    results = await runner.run([case("A", EvaluationCategory.GOLDEN)])
-
-    assert tracer.spans == ["A"]
-    assert results[0].trace_id == "trace-A"
-
-
-async def test_trace_id_is_kept_when_the_evaluator_fails() -> None:
-    runner = EvaluationRunner(
-        {EvaluationCategory.GOLDEN: RaisingEvaluator()}, tracer=RecordingTracer()
-    )
-    results = await runner.run([case("A", EvaluationCategory.GOLDEN)])
-
-    assert results[0].trace_id == "trace-A"
 
 
 async def test_unavailable_evaluator_reports_its_reason() -> None:
