@@ -7,8 +7,16 @@ from decimal import Decimal
 from functools import cache
 from pathlib import Path
 
-# support-data/ at the repository root; SUPPORT_DATA_DIR overrides it (e.g. in Docker).
-DATA_DIR = Path(os.getenv("SUPPORT_DATA_DIR", Path(__file__).resolve().parents[3] / "support-data"))
+DEFAULT_DATA_DIR = Path(__file__).resolve().parents[3] / "support-data"
+
+
+def data_dir() -> Path:
+    """support-data/ at the repository root; SUPPORT_DATA_DIR overrides it (e.g. in Docker).
+    An empty value, as in a copied .env.example, means the default."""
+    return Path(os.getenv("SUPPORT_DATA_DIR") or DEFAULT_DATA_DIR)
+
+
+DATA_DIR = data_dir()
 
 
 @cache
