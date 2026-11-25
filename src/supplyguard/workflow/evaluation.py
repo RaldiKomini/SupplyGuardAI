@@ -184,7 +184,7 @@ class RestartEvaluator(_GoldenCase):
                 problems.append("the approval payload changed across the restart")
             events = await self.approve_all(restarted, resumed)
 
-        state = (await restarted._graph.aget_state(restarted._config(incident.case_id))).values
+        state = await restarted.case_values(incident.case_id)
         results = state.get("execution_results") or []
         keys = [r["idempotency_key"] for r in results]
         if state.get("status") != "completed":

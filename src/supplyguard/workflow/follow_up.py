@@ -19,6 +19,7 @@ from supplyguard.contracts import (
     ExecutionResult,
     OperationalIntelligenceResult,
     RecoveryPlan,
+    SecurityFinding,
 )
 from supplyguard.reporting.report import completed_action_count
 from supplyguard.workflow.services import WorkflowServices
@@ -132,27 +133,45 @@ def _recap(state: dict) -> str:
 
 async def answer_follow_up(
     model: BaseChatModel, services: WorkflowServices, state: dict, question: str
-) -> str:
-    """Usable while the graph waits for approval too: CaseWorkflow calls it directly then."""
+) -> tuple[str, tuple[SecurityFinding, ...]]:
+    """Answer from the saved case after screening the question and user history."""
+    safety = services.content_safety
+    findings = safety.scan(question, "user_message")
+    if findings:
+        return "Please restate your question without the flagged instruction.", findings
     if not state.get("incident"):
-        return "There is no confirmed incident in this case yet."
+        return "There is no confirmed incident in this case yet.", ()
     classifier = model.with_structured_output(FollowUpIntent, method="json_schema", strict=True)
     intent = await classifier.ainvoke(INTENT_PROMPT.format_messages(question=question))
 
     if intent.kind == "change_spending_cap" and intent.new_spending_cap_eur and state.get("plan"):
-        return await _what_if_cap(services, state, Decimal(str(intent.new_spending_cap_eur)))
+        return (await _what_if_cap(services, state, Decimal(str(intent.new_spending_cap_eur)))), ()
     if intent.kind == "resume":
-        return _recap(state)
-    record = json.dumps({k: state.get(k) for k in RECORD_KEYS}, default=str, indent=1)
-    history = [*state.get("messages", [])[-6:], HumanMessage(question)]
-    answer = await model.ainvoke(ANSWER_PROMPT.format_messages(record=record, history=history))
-    return str(answer.content)
+        return _recap(state), ()
+    record = {key: state.get(key) for key in RECORD_KEYS}
+    incident = record["incident"]
+    if safety.scan(incident.get("original_message", ""), "user_message"):
+        record["incident"] = {**incident, "original_message": "[flagged text removed]"}
+    history = [
+        message
+        for message in state.get("messages", [])[-6:]
+        if not isinstance(message, HumanMessage)
+        or not safety.scan(str(message.content), "user_message")
+    ]
+    history.append(HumanMessage(question))
+    case_record = json.dumps(record, default=str, indent=1)
+    answer = await model.ainvoke(ANSWER_PROMPT.format_messages(record=case_record, history=history))
+    return str(answer.content), ()
 
 
 def make_follow_up_step(model: BaseChatModel, services: WorkflowServices):
     async def follow_up(state: CaseState) -> dict:
         question = str(state["messages"][-1].content)
         earlier = {**state, "messages": state["messages"][:-1]}  # the question is sent once
-        return {"messages": [AIMessage(await answer_follow_up(model, services, earlier, question))]}
+        answer, findings = await answer_follow_up(model, services, earlier, question)
+        return {
+            "messages": [AIMessage(answer)],
+            "security_findings": [f.model_dump(mode="json") for f in findings],
+        }
 
     return follow_up

@@ -5,6 +5,7 @@ report is one the workflow received from the owning component.
 """
 
 from collections.abc import Sequence
+from decimal import Decimal
 
 from supplyguard.contracts import (
     ApprovalDecision,
@@ -24,6 +25,11 @@ from supplyguard.contracts import (
 
 def _eur(value) -> str:
     return f"EUR {value:,.0f}"
+
+
+def _quantity(value) -> str:
+    """450.0000 -> "450", 12.50 -> "12.5": no trailing zeros, thousands separated."""
+    return f"{Decimal(str(value)).normalize():,f}"
 
 
 def _sources(sources: tuple[SourceReference, ...]) -> str:
@@ -108,7 +114,7 @@ def build_incident_report(state: dict) -> str:
             *_bullets(
                 [
                     f"Usable stock: {impact.total_usable_units:,} units; daily demand "
-                    f"{impact.daily_demand_units:,} units",
+                    f"{_quantity(impact.daily_demand_units)} units",
                     f"Projected shortfall: {impact.projected_shortfall_units:,} units; "
                     "first stockout "
                     f"{impact.first_stockout_date or 'not projected'}",
@@ -152,7 +158,10 @@ def build_incident_report(state: dict) -> str:
 
     findings = state.get("investigation_findings") or []
     out += [
-        "## Investigation findings",
+        "## AI investigation notes (unverified)",
+        "Written by the investigation agent from the case data, with their sources. They help "
+        "the reviewer but do not change the plan; the numbers above come from the calculations.",
+        "",
         *_bullets(
             [f"[{f['severity']}] {f['finding']} ({'; '.join(f['source_ids'])})" for f in findings]
         ),

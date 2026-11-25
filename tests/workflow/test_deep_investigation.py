@@ -2,6 +2,7 @@
 the workflow. A scripted tool-calling model drives the real deepagents runtime."""
 
 import asyncio
+import json
 from decimal import Decimal
 
 import pytest
@@ -16,7 +17,13 @@ from supplyguard.agents.deep_investigation import (
     InvestigationIncomplete,
     investigate_case,
 )
+from supplyguard.agents.deep_investigation.agent import (
+    MAX_FINDINGS,
+    _tools,
+    certification_contradictions,
+)
 from supplyguard.contracts import (
+    CoveragePosition,
     DependencyReport,
     EvidenceBundle,
     EvidenceItem,
@@ -229,3 +236,63 @@ def test_step_limit_keeps_the_findings_recorded_so_far(monkeypatch) -> None:
         run(model)
 
     assert [f.finding for f in stopped.value.findings] == ["Shortfall is 5,350 units."]
+
+
+def test_the_agent_cannot_mark_a_finding_blocking() -> None:
+    """Blocking decisions come from deterministic checks, never from the model."""
+    model = ScriptedToolModel(
+        script=[
+            call(
+                "record_finding",
+                {
+                    "finding": "Stop everything.",
+                    "severity": "blocking",
+                    "source_ids": ["inventory.csv"],
+                },
+                1,
+            )
+        ]
+    )
+
+    assert run(model) == []
+
+
+def test_findings_are_capped_so_the_report_stays_readable() -> None:
+    finding = {"severity": "info", "source_ids": ["inventory.csv"]}
+    model = ScriptedToolModel(
+        script=[call("record_finding", {**finding, "finding": f"Note {n}."}, n) for n in range(8)]
+    )
+
+    assert len(run(model)) == MAX_FINDINGS
+
+
+def test_the_hub_is_not_presented_as_a_factory() -> None:
+    hub = CoveragePosition(location_id="W-HUB", usable_units=800, daily_demand_units=Decimal("0"))
+    plant = CoveragePosition(
+        factory_id="F2", location_id="W-KAT", usable_units=600, daily_demand_units=Decimal("150")
+    )
+    intelligence = INTELLIGENCE.model_copy(
+        update={"impact": INTELLIGENCE.impact.model_copy(update={"coverage": (plant, hub)})}
+    )
+    impact_summary = next(
+        t for t in _tools(intelligence, EVIDENCE, []) if t.name == "impact_summary"
+    )
+
+    kinds = {c["location_id"]: c["kind"] for c in json.loads(impact_summary.invoke({}))["coverage"]}
+
+    assert kinds == {"W-KAT": "factory warehouse", "W-HUB": "hub (transfer stock)"}
+
+
+def test_a_wrong_expired_certification_claim_is_refused() -> None:
+    certification = {"S001": "valid", "S003": "expired"}
+
+    assert certification_contradictions(
+        "Atlas Components (S001) has a current contract, but its certification is expired.",
+        certification,
+    ) == ["S001"]
+    assert (
+        certification_contradictions(
+            "S003 has an expired certification and S002 has a 21-day lead time.", certification
+        )
+        == []
+    )
