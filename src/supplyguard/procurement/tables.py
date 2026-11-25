@@ -31,6 +31,18 @@ approval_requests = Table(
     Column("requested_at", DateTime(timezone=True), nullable=False),
 )
 
+approval_decisions = Table(
+    "approval_decisions",
+    metadata,
+    Column("approval_request_id", Text, primary_key=True),
+    Column("user_id", Text, primary_key=True),
+    Column("role", Text, nullable=False),
+    Column("decision", Text, nullable=False),
+    Column("decided_at", DateTime(timezone=True), nullable=False),
+    Column("comment", Text),
+    Column("modified_actions", JSONB),
+)
+
 executed_actions = Table(
     "executed_actions",
     metadata,

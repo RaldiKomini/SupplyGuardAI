@@ -11,7 +11,11 @@ from supplyguard.contracts import ApprovalDecision, ApprovalRequest, ExecutionRe
 
 
 class McpProcurementClient:
-    """Implements ProcurementExecutionService by calling execute_approved_request."""
+    """Implements ProcurementExecutionService by calling execute_approved_request.
+
+    Only the request id is sent. The server loads the request and the approvers'
+    decisions from the approval tables, so the decision argument is not trusted.
+    """
 
     def __init__(self, url: str, *, timeout_seconds: float = 10.0) -> None:
         self.url = url
@@ -22,10 +26,7 @@ class McpProcurementClient:
     ) -> tuple[ExecutionResult, ...]:
         payload = await self._call(
             "execute_approved_request",
-            {
-                "approval_request": request.model_dump(mode="json"),
-                "approval_decision": decision.model_dump(mode="json"),
-            },
+            {"approval_request_id": request.approval_request_id},
         )
         return tuple(ExecutionResult.model_validate(item) for item in payload["results"])
 

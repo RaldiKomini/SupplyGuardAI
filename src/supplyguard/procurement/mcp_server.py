@@ -1,8 +1,9 @@
 """MCP server for the simulated procurement ERP.
 
-Read tools return case data. There is one write tool, and it only executes an
-approval request together with its decision: it checks the approval again and
-never runs the same action twice. There is no tool that creates an order directly.
+Read tools return case data. There is one write tool, and it takes only an approval
+request id: the request and the approvers' decisions are loaded from the approval
+tables, never accepted from the caller. It checks the approval again and never runs
+the same action twice. There is no tool that creates an order directly.
 """
 
 import os
@@ -13,8 +14,8 @@ from typing import Any
 
 from mcp.server.fastmcp import FastMCP
 
-from supplyguard.contracts import ApprovalDecision, ApprovalRequest
 from supplyguard.data.database import Database
+from supplyguard.procurement.approvals import ApprovalRecords, PostgresApprovalRecords
 from supplyguard.procurement.execution import ExecutionStore, execute_approved
 from supplyguard.procurement.store import PostgresExecutionStore
 from supplyguard.repositories.operational import OperationalRepository
@@ -23,7 +24,8 @@ server = FastMCP(
     name="supplyguard-procurement",
     instructions=(
         "Simulated procurement ERP. Read tools return operational data. "
-        "execute_approved_request runs only actions with a matching approval, once each."
+        "execute_approved_request runs a stored approval request only if the stored "
+        "decisions approve it, once per action."
     ),
     host=os.getenv("PROCUREMENT_MCP_HOST", "127.0.0.1"),
     port=int(os.getenv("PROCUREMENT_MCP_PORT", "8100")),
@@ -41,6 +43,10 @@ def _db() -> Database:
 
 def _store() -> ExecutionStore:
     return PostgresExecutionStore(_db())
+
+
+def _approvals() -> ApprovalRecords:
+    return PostgresApprovalRecords(_db())
 
 
 def _now() -> datetime:
@@ -81,12 +87,12 @@ async def get_execution_result(idempotency_key: str) -> dict[str, Any]:
 
 
 @server.tool(structured_output=True)
-async def execute_approved_request(
-    approval_request: dict[str, Any], approval_decision: dict[str, Any]
-) -> dict[str, list[dict[str, Any]]]:
-    """Execute the actions of an approved request, once each. Returns one result per action."""
-    request = ApprovalRequest.model_validate(approval_request)
-    decision = ApprovalDecision.model_validate(approval_decision)
+async def execute_approved_request(approval_request_id: str) -> dict[str, list[dict[str, Any]]]:
+    """Execute a stored approval request, once per action, if its stored decisions approve it."""
+    records = await _approvals().load(approval_request_id)
+    if records is None:
+        raise ValueError(f"unknown approval request {approval_request_id}")
+    request, decision = records
     results = await execute_approved(request, decision, _store(), now=_now())
     return {"results": [result.model_dump(mode="json") for result in results]}
 

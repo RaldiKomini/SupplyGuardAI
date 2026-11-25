@@ -56,11 +56,6 @@ class PostgresExecutionStore:
         self, idempotency_key: str, request: ApprovalRequest, action: RecoveryAction
     ) -> bool:
         async with self.database.transaction() as connection:
-            await connection.execute(
-                pg_insert(approval_requests)
-                .values(_request_row(request))
-                .on_conflict_do_nothing(index_elements=["approval_request_id"])
-            )
             claimed = await connection.execute(
                 pg_insert(executed_actions)
                 .values(
@@ -102,21 +97,6 @@ class PostgresExecutionStore:
                     },
                 )
             )
-
-
-def _request_row(request: ApprovalRequest) -> dict[str, object]:
-    return {
-        "approval_request_id": request.approval_request_id,
-        "case_id": request.case_id,
-        "option_id": request.option_id,
-        "payload_version": request.payload_version,
-        "payload_hash": request.payload_hash,
-        "payload": [action.model_dump(mode="json") for action in request.actions],
-        "total_eur": request.total_cost_eur,
-        "required_roles": list(request.required_approver_roles),
-        "evidence_source_ids": list(request.evidence_source_ids),
-        "requested_at": request.requested_at,
-    }
 
 
 def _audit(case_id: str, event: str, details: dict[str, object]):

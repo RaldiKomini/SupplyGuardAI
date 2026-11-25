@@ -48,6 +48,7 @@ def reprice_actions(
         if new_action is not None:
             repriced.append(new_action)
     problems.extend(_transfer_stock_problems(actions, inputs))
+    problems.extend(_supplier_capacity_problems(actions, inputs))
 
     total = sum((action.cost_eur for action in repriced), Decimal("0"))
     cap = inputs.incident.spending_cap_eur
@@ -113,6 +114,32 @@ def _transfer_stock_problems(actions: tuple[RecoveryAction, ...], inputs: Planni
             problems.append(
                 f"transfers move {quantity} units from {location_id}, "
                 f"which has {position.usable_units} usable"
+            )
+    return problems
+
+
+def _supplier_capacity_problems(actions: tuple[RecoveryAction, ...], inputs: PlanningInputs):
+    """Several purchases from one supplier may not add up to more than its capacity."""
+    ordered: dict[tuple[str, str], int] = defaultdict(int)
+    for action in actions:
+        if action.action_type == RecoveryActionType.PURCHASE_ALTERNATIVE:
+            supplier_id = str(action.payload.get("supplier_id"))
+            component_id = str(action.payload.get("component_id", inputs.incident.component_id))
+            ordered[(supplier_id, component_id)] += int(action.payload.get("qty", 0))
+    problems = []
+    for (supplier_id, component_id), quantity in ordered.items():
+        capability = next(
+            (
+                c
+                for c in inputs.impact.supplier_capabilities
+                if c.supplier_id == supplier_id and c.component_id == component_id
+            ),
+            None,
+        )
+        if capability is not None and quantity > capability.monthly_capacity_units:
+            problems.append(
+                f"purchases from {supplier_id} for {component_id} total {quantity} units, "
+                f"above its monthly capacity of {capability.monthly_capacity_units}"
             )
     return problems
 

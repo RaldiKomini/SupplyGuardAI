@@ -201,3 +201,17 @@ def test_edit_above_spending_cap_is_rejected() -> None:
             policy=POLICY,
             requested_at=NOW,
         )
+
+
+def test_split_purchases_above_supplier_capacity_are_rejected() -> None:
+    first = PURCHASE.model_copy(update={"payload": {**PURCHASE.payload, "qty": 2000}})
+    second = first.model_copy(update={"action_id": "ACT-4"})
+
+    with pytest.raises(RevalidationError, match="total 4000 units"):
+        revalidate_request(
+            _request(),
+            (TRANSFER, EXPEDITE, first, second),
+            inputs=INPUTS,
+            policy=POLICY,
+            requested_at=NOW,
+        )

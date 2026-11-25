@@ -1,4 +1,4 @@
-"""The PostgreSQL store keeps one outcome per idempotency key, also across restarts."""
+"""Stored approvals gate execution, and one outcome is kept per key across restarts."""
 
 import asyncio
 import os
@@ -7,12 +7,13 @@ from pathlib import Path
 import pytest
 from alembic import command
 from alembic.config import Config
-from procurement.test_execution import NOW, REQUEST, _decision
+from procurement.test_execution import NOW, REQUEST
 from sqlalchemy import func, select
 from testcontainers.community.postgres import PostgresContainer
 
 from supplyguard.contracts import ExecutionStatus
 from supplyguard.data.database import Database
+from supplyguard.procurement.approvals import DecisionRecord, PostgresApprovalRecords
 from supplyguard.procurement.execution import execute_approved
 from supplyguard.procurement.store import PostgresExecutionStore
 from supplyguard.procurement.tables import audit_log, executed_actions
@@ -37,12 +38,23 @@ def test_execution_survives_a_restart(monkeypatch: pytest.MonkeyPatch) -> None:
 async def run_twice(url: str) -> None:
     first_db, second_db = Database(url), Database(url)
     try:
-        first = await execute_approved(
-            REQUEST, _decision(), PostgresExecutionStore(first_db), now=NOW
-        )
+        records = PostgresApprovalRecords(first_db)
+        await records.save_request(REQUEST)
+        assert (await records.load(REQUEST.approval_request_id))[1].approved is False
+
+        for user_id, role in (
+            ("u-pm-01", "procurement_manager"),
+            ("u-fc-01", "finance_controller"),
+        ):
+            record = DecisionRecord(user_id, role, "approve", NOW)
+            await records.save_decision(REQUEST.approval_request_id, record)
+        request, decision = await records.load(REQUEST.approval_request_id)
+        assert request == REQUEST
+
+        first = await execute_approved(request, decision, PostgresExecutionStore(first_db), now=NOW)
         # A new store and connection pool, as after a restart of the MCP server.
         second = await execute_approved(
-            REQUEST, _decision(), PostgresExecutionStore(second_db), now=NOW
+            request, decision, PostgresExecutionStore(second_db), now=NOW
         )
 
         assert [r.status for r in first] == [ExecutionStatus.SUCCEEDED] * 2
