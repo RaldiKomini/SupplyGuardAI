@@ -6,7 +6,7 @@ This module only combines them, checks the rules, and explains each verdict.
 
 from dataclasses import dataclass
 from datetime import date
-from decimal import Decimal
+from decimal import ROUND_HALF_UP, Decimal
 
 from supplyguard.contracts import (
     CalculationTrace,
@@ -29,8 +29,12 @@ from supplyguard.planning.screening import (
 )
 
 REVENUE_NOTE = (
-    "Revenue at risk is the case exposure before recovery; it is reported "
-    "separately from recovery cost and is not an expected loss."
+    "Proportional revenue exposure estimate: case exposure times the share of the unit "
+    "shortfall left uncovered. Customer due dates and order allocation are outside this estimate."
+)
+REJECTED_COST_NOTE = (
+    "Estimated cost of buying the shortfall from this supplier, up to its monthly capacity, "
+    "shown for comparison only. The option is rejected and has no executable actions."
 )
 
 
@@ -288,15 +292,41 @@ def _purchase_actions(
     return tuple(actions)
 
 
+def residual_revenue_at_risk(inputs: PlanningInputs, uncovered_units: int) -> Decimal:
+    """Revenue still exposed after an option, in proportion to the shortfall it leaves."""
+    shortfall = inputs.impact.projected_shortfall_units
+    if shortfall <= 0 or uncovered_units <= 0:
+        return Decimal("0.00")
+    share = Decimal(min(uncovered_units, shortfall)) / Decimal(shortfall)
+    return (inputs.impact.revenue_at_risk_eur * share).quantize(
+        Decimal("0.01"), rounding=ROUND_HALF_UP
+    )
+
+
+def _rejected_cost(inputs: PlanningInputs, capability: SupplierCapability) -> Decimal:
+    shortfall = inputs.impact.projected_shortfall_units
+    quantity = min(shortfall, capability.monthly_capacity_units)
+    trace = inputs.costs.estimate_purchase(
+        PurchaseCostInput(
+            quantity=quantity,
+            unit_price_eur=capability.unit_price_eur,
+            sources=capability.sources,
+        )
+    )
+    return Decimal(trace.result)
+
+
 def _rejected_suppliers(inputs, screenings) -> list[RecoveryOption]:
+    shortfall = inputs.impact.projected_shortfall_units
     return [
         RecoveryOption(
             option_id=f"OPT-REJECTED-{capability.supplier_id}",
             name=f"Purchase from {capability.supplier_id}",
             actions=(),
-            recovery_cost_eur=Decimal("0"),
-            revenue_at_risk_eur=inputs.impact.revenue_at_risk_eur,
-            uncovered_units=inputs.impact.projected_shortfall_units,
+            recovery_cost_eur=_rejected_cost(inputs, capability),
+            revenue_at_risk_eur=residual_revenue_at_risk(inputs, shortfall),
+            uncovered_units=shortfall,
+            assumptions=(REJECTED_COST_NOTE, REVENUE_NOTE),
             rejection_reasons=screening.rejection_reasons,
             sources=capability.sources,
         )
@@ -318,13 +348,14 @@ def _option(
     reasons = []
     if cost > inputs.incident.spending_cap_eur:
         reasons.append(f"cost {cost} EUR exceeds the {inputs.incident.spending_cap_eur} EUR cap")
+    uncovered = max(0, inputs.impact.projected_shortfall_units - covered_units)
     return RecoveryOption(
         option_id=option_id,
         name=name,
         actions=actions,
         recovery_cost_eur=cost,
-        revenue_at_risk_eur=inputs.impact.revenue_at_risk_eur,
-        uncovered_units=max(0, inputs.impact.projected_shortfall_units - covered_units),
+        revenue_at_risk_eur=residual_revenue_at_risk(inputs, uncovered),
+        uncovered_units=uncovered,
         assumptions=(REVENUE_NOTE,),
         rejection_reasons=tuple(reasons),
         policy_warnings=warnings,

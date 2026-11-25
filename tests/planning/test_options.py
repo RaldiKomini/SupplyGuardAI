@@ -71,8 +71,48 @@ def test_plan_1_is_recommended_and_residual_gap_is_reported() -> None:
 def test_revenue_at_risk_is_kept_separate_from_cost() -> None:
     plan_1 = OPTIONS["OPT-PLAN-1"]
 
-    assert plan_1.revenue_at_risk_eur == Decimal("37983380")
+    # 850 of the 5,350 shortfall units stay uncovered: 37,983,380 x 850 / 5,350.
+    assert plan_1.revenue_at_risk_eur == Decimal("6034742.62")
     assert plan_1.recovery_cost_eur != plan_1.revenue_at_risk_eur
+
+
+def test_revenue_at_risk_follows_the_units_each_option_leaves_uncovered() -> None:
+    exposure = IMPACT.revenue_at_risk_eur
+    for option in PLAN.options:
+        expected = exposure * option.uncovered_units / IMPACT.projected_shortfall_units
+        assert abs(option.revenue_at_risk_eur - expected) < Decimal("0.01"), option.option_id
+
+    full = [o for o in PLAN.options if o.uncovered_units == 0 and not o.rejection_reasons]
+    assert full and all(o.revenue_at_risk_eur == 0 for o in full)
+    assert OPTIONS["OPT-PLAN-1"].revenue_at_risk_eur < exposure
+    assert OPTIONS["OPT-REJECTED-S002"].revenue_at_risk_eur == exposure
+    assert len({o.revenue_at_risk_eur for o in PLAN.options}) > 2
+
+
+def test_rejected_suppliers_show_their_estimated_cost_not_zero() -> None:
+    for supplier_id in ("S002", "S003"):
+        option = OPTIONS[f"OPT-REJECTED-{supplier_id}"]
+        capability = next(c for c in IMPACT.supplier_capabilities if c.supplier_id == supplier_id)
+        quantity = min(IMPACT.projected_shortfall_units, capability.monthly_capacity_units)
+
+        assert option.recovery_cost_eur == quantity * capability.unit_price_eur
+        assert option.recovery_cost_eur > 0
+        assert not option.actions
+        assert any("for comparison only" in a for a in option.assumptions)
+
+
+def test_zero_capacity_supplier_has_zero_comparison_cost() -> None:
+    capabilities = tuple(
+        c.model_copy(update={"monthly_capacity_units": 0}) if c.supplier_id == "S003" else c
+        for c in IMPACT.supplier_capabilities
+    )
+    impact = IMPACT.model_copy(update={"supplier_capabilities": capabilities})
+    plan = build_recovery_plan(replace(INPUTS, impact=impact))
+    rejected = next(o for o in plan.options if o.option_id == "OPT-REJECTED-S003")
+
+    assert rejected.recovery_cost_eur == 0
+    assert not rejected.actions
+    assert rejected.rejection_reasons
 
 
 def test_minimum_order_above_capacity_rejects_the_supplier() -> None:
