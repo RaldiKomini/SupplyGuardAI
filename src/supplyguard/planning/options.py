@@ -49,7 +49,7 @@ def missing_planning_data(inputs: PlanningInputs) -> tuple[str, ...]:
     if _delayed_arrival_day(inputs) is None:
         return (
             f"expected arrival date of the delayed delivery from {inputs.incident.supplier_id}: "
-            "no open purchase order was found",
+            "no delivery date could be verified",
         )
     return ()
 
@@ -154,8 +154,20 @@ def _delayed_arrival_day(inputs: PlanningInputs) -> int | None:
     incident = inputs.incident
     if inputs.expected_arrival_date is not None:
         return (inputs.expected_arrival_date - incident.scenario_date).days
+    if any(w.issue_type == "delayed_order_unconfirmed" for w in inputs.impact.warnings):
+        return None
+    # Use the same verified window that the impact service used to calculate the shortfall.
+    for trace in inputs.impact.calculations:
+        if trace.calculation == "projected_shortfall" and "window_days" in trace.inputs:
+            return int(trace.inputs["window_days"])
+
+    # Older impact reports may not carry the window in their calculation trace.
     orders = [
-        po for po in inputs.impact.open_purchase_orders if po.supplier_id == incident.supplier_id
+        po
+        for po in inputs.impact.open_purchase_orders
+        if po.supplier_id == incident.supplier_id
+        and po.component_id == incident.component_id
+        and po.promised_date >= incident.scenario_date
     ]
     if not orders:
         return None

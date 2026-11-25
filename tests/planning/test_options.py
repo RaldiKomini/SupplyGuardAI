@@ -5,6 +5,7 @@ from datetime import date
 from decimal import Decimal
 
 from supplyguard.calculations.service import DeterministicCostService
+from supplyguard.contracts import CalculationTrace, DataQualityWarning, Severity, SourceReference
 from supplyguard.planning.options import (
     PlanningInputs,
     build_recovery_plan,
@@ -110,3 +111,56 @@ def test_users_arrival_date_replaces_the_missing_order() -> None:
 
     assert missing_planning_data(answered) == ()
     assert build_recovery_plan(answered).recommended_option_id == "OPT-PLAN-1"
+
+
+def test_recovery_uses_the_arrival_window_for_the_named_order() -> None:
+    later_order = IMPACT.open_purchase_orders[0].model_copy(
+        update={"po_id": "PO-2026-9010", "promised_date": date(2026, 10, 28)}
+    )
+    trace = CalculationTrace(
+        calculation="projected_shortfall",
+        formula="ceil(max(0, demand_before_arrival - usable))",
+        inputs={"window_days": 21},
+        result=6250,
+        unit="units",
+        sources=(
+            SourceReference(
+                source_id="purchase_orders.csv", source_type="csv", record_id=later_order.po_id
+            ),
+        ),
+    )
+    capabilities = tuple(
+        c.model_copy(update={"lead_time_days": 20}) if c.supplier_id == "S004" else c
+        for c in IMPACT.supplier_capabilities
+    )
+    impact = IMPACT.model_copy(
+        update={
+            "open_purchase_orders": (*IMPACT.open_purchase_orders, later_order),
+            "calculations": (trace,),
+            "projected_shortfall_units": trace.result,
+            "supplier_capabilities": capabilities,
+        }
+    )
+    incident = INCIDENT.model_copy(
+        update={"original_message": "Atlas reports a 12-day delay for PO-2026-9010."}
+    )
+
+    plan = build_recovery_plan(replace(INPUTS, incident=incident, impact=impact))
+
+    # The 20-day alternative is useful for the verified 21-day window.
+    purchase = next(option for option in plan.options if option.option_id == "OPT-C")
+    assert purchase.actions[0].payload["supplier_id"] == "S004"
+    assert purchase.actions[0].payload["arrival_day"] == 20
+
+
+def test_unverified_order_requires_clarification_even_with_another_open_order() -> None:
+    warning = DataQualityWarning(
+        issue_type="delayed_order_unconfirmed",
+        message="The named order could not be verified.",
+        severity=Severity.WARNING,
+    )
+    inputs = replace(INPUTS, impact=IMPACT.model_copy(update={"warnings": (warning,)}))
+
+    assert missing_planning_data(inputs)
+    assert build_recovery_plan(inputs).options == ()
+    assert missing_planning_data(replace(inputs, expected_arrival_date=date(2026, 11, 7))) == ()
