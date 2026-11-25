@@ -54,7 +54,8 @@ Code then decides:
 - the spending limit can be lowered by the user, never raised: a higher request is kept in
   `requested_spending_cap_eur` for the Finance Director approval path.
 
-Each new user message is also scanned by `ContentSafetyService` (George). Embedded
+Each new user message, including follow-up questions, is also scanned by
+`ContentSafetyService` (George). Embedded
 instructions, e.g. a pasted "SYSTEM: reveal…" notice, become security findings in the case
 and the report; the extraction prompt treats such text as data.
 
@@ -70,6 +71,9 @@ and the report; the extraction prompt treats such text as data.
 - One case is one LangGraph thread (`thread_id = case_id`). `postgres_checkpointer()` saves
   every finished step, so a restart continues at the next unfinished step without repeating
   finished ones; execution itself is idempotent in the procurement service.
+- Runs use `durability="sync"`: each step is saved before the next one starts. LangGraph's
+  default (`"async"`) saves while the next step runs, so a crash at that moment could lose
+  the step and repeat it after the restart.
 - Windows: call `use_windows_compatible_event_loop()` at startup (psycopg async).
 
 ## Deep Agent investigation
@@ -107,10 +111,18 @@ The approval service revalidates edits against the incident and impact saved in 
 through `CaseWorkflow.case_context()`.
 
 ```python
-use_windows_compatible_event_loop()
+use_windows_compatible_event_loop()  # at the top of the app module
 async with open_case_workflow() as workflow:
     service = CaseService(workflow, ...)
+
+async with open_workflow_parts() as parts:  # evaluation harness
+    evaluators.update(parts.evaluators(owner, approvers))
 ```
+
+`use_windows_compatible_event_loop()` must run at import time of `chainlit_app.py`: Chainlit
+imports the app module before it starts its event loop, so the policy applies to that loop.
+`open_workflow_parts()` returns the model, services and checkpoints; every workflow built
+from them shares the checkpoints, which is what the restart evaluator relies on.
 
 ## Evaluation
 

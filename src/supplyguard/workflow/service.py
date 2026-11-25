@@ -50,7 +50,7 @@ STEP_EVENTS = {
     "write_report": (UIEventType.OUTCOME, "Incident report ready.", ("report",)),
     "stop_case": (UIEventType.ERROR, "No recommendation could be prepared.", ()),
     "stop_intake": (UIEventType.PROGRESS, "More information is needed.", ()),
-    "follow_up": (UIEventType.PROGRESS, "Answer.", ()),
+    "follow_up": (UIEventType.PROGRESS, "Answer.", ("security_findings",)),
 }
 
 
@@ -110,7 +110,11 @@ class CaseWorkflow:
 
     async def _run(self, case_id: str, graph_input) -> AsyncIterator[UIEvent]:
         config = self._config(case_id)
-        async for chunk in self._graph.astream(graph_input, config, stream_mode="updates"):
+        # "sync": each step is saved before the next one starts. With LangGraph's default
+        # ("async") a crash right after a step can lose its save, and a restart would run that
+        # step again (e.g. record the same approval twice).
+        stream = self._graph.astream(graph_input, config, stream_mode="updates", durability="sync")
+        async for chunk in stream:
             for step, update in chunk.items():
                 if step == "__interrupt__":
                     for pause in update:
@@ -147,8 +151,10 @@ class CaseWorkflow:
         if pending and pending["type"] == "clarification":  # the answer resumes intake
             stream = self._run(case_id, Command(resume=message))
         elif pending:  # waiting for approval: answer, but keep waiting
+            findings = self._services.content_safety.scan(message, "user_message")
             answer = await answer_follow_up(self._model, self._services, state.values, message)
-            yield _event(case_id, UIEventType.PROGRESS, "follow_up", answer)
+            payload = {"security_findings": [f.model_dump(mode="json") for f in findings]}
+            yield _event(case_id, UIEventType.PROGRESS, "follow_up", answer, payload)
             return
         else:  # finished case -> follow-up; unfinished intake -> read again
             stream = self._run(case_id, {"messages": [HumanMessage(message)]})
@@ -210,10 +216,15 @@ class CaseWorkflow:
                     decision.case_id, UIEventType.PROGRESS, event.stage, "Decision submitted."
                 )
 
+    async def case_values(self, case_id: str) -> dict:
+        """Everything saved in a case, for internal use (evaluation, the approval service).
+        It does no ownership check, so it must not be exposed to users."""
+        return dict((await self._graph.aget_state(self._config(case_id))).values)
+
     async def case_context(self, case_id: str):
         """(ConfirmedIncident, ImpactReport) saved in a case. The approval service uses it to
         revalidate edits against the same numbers the plan was built from."""
-        values = (await self._graph.aget_state(self._config(case_id))).values
+        values = await self.case_values(case_id)
         if not values.get("incident") or not values.get("intelligence"):
             raise LookupError(f"case {case_id} has no confirmed incident and impact yet")
         incident = ConfirmedIncident.model_validate(values["incident"])

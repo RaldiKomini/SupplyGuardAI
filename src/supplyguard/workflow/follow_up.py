@@ -152,7 +152,12 @@ async def answer_follow_up(
 def make_follow_up_step(model: BaseChatModel, services: WorkflowServices):
     async def follow_up(state: CaseState) -> dict:
         question = str(state["messages"][-1].content)
+        findings = services.content_safety.scan(question, "user_message")  # untrusted, like intake
         earlier = {**state, "messages": state["messages"][:-1]}  # the question is sent once
-        return {"messages": [AIMessage(await answer_follow_up(model, services, earlier, question))]}
+        answer = await answer_follow_up(model, services, earlier, question)
+        return {
+            "messages": [AIMessage(answer)],
+            "security_findings": [f.model_dump(mode="json") for f in findings],
+        }
 
     return follow_up

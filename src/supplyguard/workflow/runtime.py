@@ -1,8 +1,11 @@
 """Builds the case workflow from the real components (central workflow integration).
 
-    use_windows_compatible_event_loop()      # once at startup, before the event loop
+    use_windows_compatible_event_loop()      # once, at the top of the app module
     async with open_case_workflow() as workflow:
         ...                                   # e.g. CaseService(workflow, ...)
+
+    async with open_workflow_parts() as parts:   # evaluation harness
+        evaluators.update(parts.evaluators(owner, approvers))
 
 Every component comes from its owner's package and is used only through its protocol. The
 recipe follows the owners' integration tests. Settings come from the environment
@@ -12,17 +15,24 @@ the model settings read by make_model().
 """
 
 import os
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Sequence
 from contextlib import AsyncExitStack, asynccontextmanager
+from dataclasses import dataclass
 from decimal import Decimal
 
 from langchain_core.language_models import BaseChatModel
+from langgraph.checkpoint.base import BaseCheckpointSaver
 
 from supplyguard.approval.policy import load_approval_policy
 from supplyguard.approval.service import DeterministicApprovalService
 from supplyguard.calculations.service import DeterministicCostService
-from supplyguard.contracts import ConfirmedIncident, OperationalIntelligenceResult
+from supplyguard.contracts import (
+    AuthorizationContext,
+    ConfirmedIncident,
+    OperationalIntelligenceResult,
+)
 from supplyguard.data.database import Database
+from supplyguard.evaluation.cases import EvaluationCategory
 from supplyguard.external_risk.mcp_client import McpRiskClient
 from supplyguard.external_risk.service import ExternalRiskService
 from supplyguard.graph.client import DependencyGraph
@@ -38,6 +48,11 @@ from supplyguard.retrieval.adapters import (
 )
 from supplyguard.retrieval.service import EvidenceService
 from supplyguard.workflow.checkpoints import postgres_checkpointer
+from supplyguard.workflow.evaluation import (
+    AmbiguityEvaluator,
+    FollowUpEvaluator,
+    RestartEvaluator,
+)
 from supplyguard.workflow.service import CaseWorkflow
 from supplyguard.workflow.services import WorkflowServices
 from supplyguard.workflow.settings import DATA_DIR, policies
@@ -62,8 +77,48 @@ class ConnectionPerCallIntelligence:
             return await service.investigate(incident)
 
 
+@dataclass(frozen=True)
+class WorkflowParts:
+    """The real model, services and checkpoints. Every workflow built from them shares the
+    checkpoints, so a second workflow on the same parts is what an application restart is."""
+
+    model: BaseChatModel
+    services: WorkflowServices
+    checkpointer: BaseCheckpointSaver
+
+    def new_workflow(self, checkpointer: BaseCheckpointSaver | None = None) -> CaseWorkflow:
+        return CaseWorkflow(
+            model=self.model, services=self.services, checkpointer=checkpointer or self.checkpointer
+        )
+
+    def evaluators(
+        self, owner: AuthorizationContext, approvers: Sequence[AuthorizationContext]
+    ) -> dict[EvaluationCategory, object]:
+        """The workflow's harness evaluators on the real components."""
+
+        def shared() -> BaseCheckpointSaver:  # the approval service reads cases from here
+            return self.checkpointer
+
+        return {
+            EvaluationCategory.AMBIGUITY: AmbiguityEvaluator(self.model, self.services.master_data),
+            EvaluationCategory.FOLLOW_UP: FollowUpEvaluator(
+                self.new_workflow, owner, approvers, shared
+            ),
+            EvaluationCategory.RESTART_RECOVERY: RestartEvaluator(
+                self.new_workflow, owner, approvers, shared
+            ),
+        }
+
+
 @asynccontextmanager
 async def open_case_workflow(model: BaseChatModel | None = None) -> AsyncIterator[CaseWorkflow]:
+    """The workflow the application uses."""
+    async with open_workflow_parts(model) as parts:
+        yield parts.new_workflow()
+
+
+@asynccontextmanager
+async def open_workflow_parts(model: BaseChatModel | None = None) -> AsyncIterator[WorkflowParts]:
     database_url = os.environ["DATABASE_URL"]
     async with AsyncExitStack() as stack:
         database = Database(database_url)
@@ -77,10 +132,10 @@ async def open_case_workflow(model: BaseChatModel | None = None) -> AsyncIterato
         evidence = EvidenceService.from_support_data(
             DATA_DIR, backend=os.getenv("EVIDENCE_BACKEND", "pgvector"), index=False
         )
-        workflow: CaseWorkflow | None = None
+        reader: CaseWorkflow | None = None
 
-        async def case_context(case_id: str):  # bound once the workflow exists, below
-            return await workflow.case_context(case_id)
+        async def case_context(case_id: str):  # bound once the checkpoints are open, below
+            return await reader.case_context(case_id)
 
         services = WorkflowServices(
             master_data=PostgresMasterDataService(database),
@@ -104,5 +159,6 @@ async def open_case_workflow(model: BaseChatModel | None = None) -> AsyncIterato
             content_safety=GuardrailContentSafetyService(),
         )
         saver = await stack.enter_async_context(postgres_checkpointer(database_url))
-        workflow = CaseWorkflow(model=model or make_model(), services=services, checkpointer=saver)
-        yield workflow
+        parts = WorkflowParts(model=model or make_model(), services=services, checkpointer=saver)
+        reader = parts.new_workflow()  # any workflow on the shared checkpoints reads every case
+        yield parts
