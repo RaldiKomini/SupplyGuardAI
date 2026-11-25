@@ -208,10 +208,12 @@ def memory_to_chunk_with_findings(record: dict) -> tuple[DocumentChunk, list[Con
     )
     clean, summary_findings = scan_and_sanitize(r.get("approved_summary", ""), memory_id)
     findings += summary_findings
+    strategy = " ".join(str(r.get("strategy", "")).split())  # one line, so it can be parsed back
     text = (
         f"[{memory_id} | approved_incident_memory | case {r.get('case_id', '')} | "
         f"component {r.get('component_id', '')} | supplier {r.get('supplier_id', '')}]\n"
-        f"Strategy: {r.get('strategy', '')}. {clean}"
+        f"Strategy: {strategy}\n"
+        f"Summary: {clean}"
     )
     chunk = DocumentChunk(
         chunk_id=citation.chunk_id,
@@ -227,6 +229,39 @@ def memory_to_chunk(record: dict) -> DocumentChunk:
     return memory_to_chunk_with_findings(record)[0]
 
 
+def load_incident_memories_with_findings(
+    jsonl_path: str | Path,
+) -> tuple[list[DocumentChunk], list[ContentFinding]]:
+    chunks, findings = [], []
+    for line in Path(jsonl_path).read_text(encoding="utf-8").splitlines():
+        if line.strip():
+            chunk, chunk_findings = memory_to_chunk_with_findings(json.loads(line))
+            chunks.append(chunk)
+            findings += chunk_findings
+    return chunks, findings
+
+
 def load_incident_memories(jsonl_path: str | Path) -> list[DocumentChunk]:
-    lines = Path(jsonl_path).read_text(encoding="utf-8").splitlines()
-    return [memory_to_chunk(json.loads(line)) for line in lines if line.strip()]
+    return load_incident_memories_with_findings(jsonl_path)[0]
+
+
+MEMORY_TEXT = re.compile(
+    r"^\[(?P<memory_id>[^ |\]]+) \| approved_incident_memory \| case (?P<case_id>[^ |\]]*) \| "
+    r"component (?P<component_id>[^ |\]]*) \| supplier (?P<supplier_id>[^ |\]]*)\]\n"
+    r"Strategy: (?P<strategy>[^\n]*)\nSummary: (?P<approved_summary>.*)$",
+    re.DOTALL,
+)
+
+
+def parse_memory_chunk(chunk: DocumentChunk) -> dict | None:
+    """Read a memory chunk back into its fields (the reverse of memory_to_chunk).
+
+    Works for chunks that come back from pgvector or Chroma after a restart, because all
+    fields are in the chunk text. The values are the SANITIZED ones that were indexed.
+    Returns None if the text does not have the expected shape."""
+    match = MEMORY_TEXT.match(chunk.text)
+    if not match:
+        return None
+    fields = match.groupdict()
+    fields["access_scope"] = chunk.citation.access_scope
+    return fields

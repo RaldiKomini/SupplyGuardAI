@@ -36,6 +36,12 @@ COLUMNS = [
 ]
 
 
+# On re-index, EVERY column is refreshed from the new chunk (provenance included: title,
+# version, effective date, scope, status ...), so a stored row can never keep stale
+# provenance next to new text.
+UPDATE_ALL = ", ".join(f"{c} = EXCLUDED.{c}" for c in [*COLUMNS[1:], "text", "embedding"])
+
+
 def _vector_literal(vec: list[float]) -> str:
     return "[" + ",".join(f"{x:.6f}" for x in vec) + "]"
 
@@ -84,10 +90,7 @@ class PgVectorStore:
                     f"""
                     INSERT INTO {self.table} ({", ".join(COLUMNS)}, text, embedding)
                     VALUES ({", ".join(["%s"] * len(COLUMNS))}, %s, %s::vector)
-                    ON CONFLICT (chunk_id) DO UPDATE SET
-                        text = EXCLUDED.text, embedding = EXCLUDED.embedding,
-                        status = EXCLUDED.status, access_scope = EXCLUDED.access_scope,
-                        security_flags = EXCLUDED.security_flags""",
+                    ON CONFLICT (chunk_id) DO UPDATE SET {UPDATE_ALL}""",
                     [meta[c] for c in COLUMNS] + [chunk.text, _vector_literal(vec)],
                 )
 
@@ -121,3 +124,12 @@ class PgVectorStore:
         with self.conn.cursor() as cur:
             cur.execute(f"SELECT count(*) FROM {self.table}")
             return cur.fetchone()[0]
+
+    def all_chunks(self) -> list[DocumentChunk]:
+        with self.conn.cursor() as cur:
+            cur.execute(f"SELECT {', '.join(COLUMNS)}, text FROM {self.table}")
+            rows = cur.fetchall()
+        return [
+            DocumentChunk.from_metadata(row[len(COLUMNS)], dict(zip(COLUMNS, row, strict=False)))
+            for row in rows
+        ]
