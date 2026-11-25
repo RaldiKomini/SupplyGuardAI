@@ -11,6 +11,7 @@ COPY config ./config
 RUN uv sync --frozen --no-dev
 # Data, migrations and loaders for the setup container; config for the app.
 COPY .chainlit ./.chainlit
+COPY public ./public
 COPY alembic.ini ./
 COPY migrations ./migrations
 COPY scripts ./scripts

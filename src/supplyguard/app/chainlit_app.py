@@ -106,12 +106,7 @@ async def start() -> None:
     cl.user_session.set("authorization", context)
     await cl.Message(
         f"Signed in as {registry.display_name(context.user_id)} ({context.role}). "
-        "Describe a supplier disruption to open a case.",
-        actions=[
-            cl.Action(name="show_approvals", payload={}, label="Show my approvals"),
-            cl.Action(name="open_latest_case", payload={}, label="Open latest case"),
-            cl.Action(name="start_new_case", payload={}, label="Start new case"),
-        ],
+        "Describe a supplier disruption to open a case."
     ).send()
     await _restore_waiting_approval(context)
 
@@ -243,6 +238,20 @@ async def show_approvals(action: cl.Action) -> None:
                 )
             ],
         ).send()
+
+
+@cl.on_window_message
+async def quick_action(message: str) -> None:
+    """Dispatch the fixed chat shortcuts through the authenticated session."""
+    if not isinstance(message, str) or cl.user_session.get("authorization") is None:
+        return
+    actions = {
+        "supplyguard:show_approvals": show_approvals,
+        "supplyguard:open_latest_case": open_latest_case,
+        "supplyguard:start_new_case": start_new_case,
+    }
+    if handler := actions.get(message):
+        await handler(cl.Action(name=message.removeprefix("supplyguard:"), payload={}))
 
 
 @cl.action_callback("review_approval")

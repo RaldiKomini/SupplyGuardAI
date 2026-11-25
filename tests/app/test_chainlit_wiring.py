@@ -478,6 +478,22 @@ def test_open_latest_case_can_show_completed_report(session, monkeypatch, sent) 
     assert sent[-1].content == "Persisted incident report"
 
 
+@pytest.mark.parametrize("name", ["show_approvals", "open_latest_case", "start_new_case"])
+def test_persistent_shortcut_routes_to_the_existing_action(name, session, monkeypatch) -> None:
+    calls = []
+
+    async def action(payload):
+        calls.append(payload.name)
+
+    monkeypatch.setattr(chainlit_app, name, action)
+    asyncio.run(chainlit_app.quick_action(f"supplyguard:{name}"))
+    asyncio.run(chainlit_app.quick_action("supplyguard:approve_request"))
+    session.set("authorization", None)
+    asyncio.run(chainlit_app.quick_action(f"supplyguard:{name}"))
+
+    assert calls == [name]
+
+
 def test_start_new_case_clears_the_restored_case(session, sent) -> None:
     session.set("case_id", "case-1")
     asyncio.run(chainlit_app.start_new_case(SimpleNamespace(payload={})))
