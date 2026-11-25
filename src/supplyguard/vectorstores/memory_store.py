@@ -19,6 +19,8 @@ class InMemoryVectorStore:
         self._vectors: dict[str, np.ndarray] = {}
 
     def add(self, chunks: list[DocumentChunk]) -> None:
+        if not chunks:
+            return
         vectors = self.embeddings.embed_documents([c.text for c in chunks])
         for chunk, vec in zip(chunks, vectors, strict=True):
             v = np.asarray(vec, dtype=float)

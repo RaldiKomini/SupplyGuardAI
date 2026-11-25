@@ -82,6 +82,8 @@ class PgVectorStore:
             )
 
     def add(self, chunks: list[DocumentChunk]) -> None:
+        if not chunks:
+            return
         vectors = self.embeddings.embed_documents([c.text for c in chunks])
         with self.conn.cursor() as cur:
             for chunk, vec in zip(chunks, vectors, strict=True):

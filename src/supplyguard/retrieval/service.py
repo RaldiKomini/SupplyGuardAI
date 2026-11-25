@@ -27,13 +27,14 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import re
 from datetime import UTC, date, datetime
 from pathlib import Path
 
 from supplyguard.contracts import AuthorizationContext, ConfirmedIncident, EvidenceBundle
 from supplyguard.guardrails.access import enforce_scope, scopes_from
-from supplyguard.guardrails.injection import detect_injection, findings_from_flags
+from supplyguard.guardrails.injection import findings_from_flags, scan_text
 from supplyguard.retrieval.conflicts import extract_facts, resolve
 from supplyguard.retrieval.contract_mapping import (
     to_evidence_conflict,
@@ -59,6 +60,59 @@ from supplyguard.vectorstores.embeddings import get_embeddings
 from supplyguard.vectorstores.memory_store import InMemoryVectorStore
 
 DEFAULT_SCENARIO_DATE = date(2026, 10, 19)
+logger = logging.getLogger(__name__)
+
+
+def _sync_store(store, chunks: list[DocumentChunk], label: str) -> None:
+    """Re-index every chunk that is missing from the store OR whose stored copy differs from
+    the current one (text or metadata: scope, status, version, flags ...). Unchanged chunks
+    are not written again. Chunks stored by others (e.g. memories saved at runtime) are kept."""
+    stored = {c.chunk_id: c for c in store.all_chunks()}
+    stale = [
+        c
+        for c in chunks
+        if c.chunk_id not in stored
+        or stored[c.chunk_id].text != c.text
+        or stored[c.chunk_id].metadata() != c.metadata()
+    ]
+    if stale:
+        logger.info(
+            "Re-indexing %d missing or changed %s chunk(s) in %s", len(stale), label, store.name
+        )
+        store.add(stale)
+
+
+class _CurrentDocuments:
+    """The document vector store, as the retriever sees it.
+
+    The vector store only decides the RANKING. Every hit is replaced by the chunk loaded from
+    the files on disk at startup, so scope, status, version and text always come from the
+    current documents, never from an older copy in the database. Hits for documents that no
+    longer exist are dropped, and the filters are checked again on the current metadata."""
+
+    def __init__(self, store, current: dict[str, DocumentChunk]):
+        self.store = store
+        self.current = current
+        self.name = store.name
+
+    def search(self, query, allowed_scopes, k=8, supplier_id=None, doc_types=None):
+        hits = self.store.search(
+            query, allowed_scopes, k=k, supplier_id=supplier_id, doc_types=doc_types
+        )
+        fresh = []
+        for stored, score in hits:
+            chunk = self.current.get(stored.chunk_id)
+            if chunk is None:
+                continue  # deleted from disk since it was indexed
+            c = chunk.citation
+            if c.access_scope not in allowed_scopes:
+                continue  # e.g. the scope was tightened after indexing
+            if supplier_id and c.supplier_id != supplier_id:
+                continue
+            if doc_types and c.doc_type not in doc_types:
+                continue
+            fresh.append((chunk, score))
+        return fresh
 
 
 def make_vector_store(backend: str, embeddings, collection: str):
@@ -93,7 +147,10 @@ class EvidenceService:
         self.document_store = document_store
         self.memory_store = memory_store
         self.scenario_date = scenario_date
-        self.retriever = Retriever(vector_store=document_store, lexical=BM25Index(chunks))
+        current = {c.chunk_id: c for c in chunks}
+        self.retriever = Retriever(
+            vector_store=_CurrentDocuments(document_store, current), lexical=BM25Index(chunks)
+        )
         # Keyword index of the memory collection. It starts with every memory already in the
         # store, so memories saved before a restart are found by BOTH searches (keyword and
         # vector), not only by the vector one.
@@ -136,8 +193,13 @@ class EvidenceService:
         service._memory_findings = memory_findings
         if index:
             doc_store.add(chunks)
-            if memories:
-                mem_store.add(memories)
+            mem_store.add(memories)
+        else:
+            # index=False means "the stores were filled by scripts/index_documents.py". They
+            # may still be empty (fresh database) or out of date (documents changed since):
+            # re-index what is missing or changed, so search never runs on stale content.
+            _sync_store(doc_store, chunks, "document")
+            _sync_store(mem_store, memories, "approved-memory")
         return service
 
     # ============================================================ shared protocol
@@ -314,7 +376,7 @@ class EvidenceService:
     def scan_untrusted_text(self, text: str, source_id: str = "user_attachment"):
         """For content that does not come from our index, e.g. a notice pasted into chat.
         Returns shared-contract SecurityFindings."""
-        return tuple(to_security_finding(f, None) for f in detect_injection(text, source_id))
+        return tuple(to_security_finding(f, None) for f in scan_text(text, source_id))
 
     # ============================================================ private helpers
     def _add_memory_chunks(self, chunks: list[DocumentChunk]) -> None:
