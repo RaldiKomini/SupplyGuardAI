@@ -57,10 +57,9 @@ Code then decides:
 - the spending limit can be lowered by the user, never raised: a higher request is kept in
   `requested_spending_cap_eur` for the Finance Director approval path.
 
-Each new user message, including follow-up questions, is also scanned by
-`ContentSafetyService` (George). Embedded
-instructions, e.g. a pasted "SYSTEM: reveal…" notice, become security findings in the case
-and the report; the extraction prompt treats such text as data.
+`ContentSafetyService` removes flagged instructions from intake messages before extraction.
+The findings are recorded with the case. Follow-up questions with flagged instructions
+are redirected to a clean question before a model is called.
 
 ## Approval, restart and idempotency
 
@@ -86,8 +85,8 @@ state (nothing on disk), and one sub-agent, `evidence-checker`. Its tools are re
 the case data already collected (evidence already filtered by the user's scopes) and
 `record_finding`, which refuses findings without sources from the case. It has no procurement,
 approval or other write tool. It runs at most `MAX_AGENT_STEPS` graph steps; at the limit the
-findings so far are kept. Findings go to the report as "AI investigation notes (unverified)"; planning stays with the
-planning service. The agent may only mark findings info or warning (blocking decisions are
+findings so far are kept in the workflow state. The report shows sourced dependency
+findings from operational intelligence. The agent may only mark findings info or warning (blocking decisions are
 deterministic), records at most six, and a finding that calls a supplier's certification
 expired is refused when master data says it is valid.
 
@@ -145,9 +144,11 @@ from them shares the checkpoints, which is what the restart evaluator relies on.
 - A different spending limit reruns the planner on a copy of the incident; nothing is saved or
   executed. A recap is a template. Other questions are answered by the model from the case
   record only, without new calculations.
-- The incident report is built from templates over the saved case, so every number and source
-  comes from the owning component. After a successful execution the approved summary is saved
-  as `ResolutionMemory` (`MEM-<case_id>`, replaced if written again).
+- The case owner sees impact, evidence conflicts, and recovery options before approval. The
+  final report lists all at-risk orders with their sources. Reopening a completed case shows
+  the saved report.
+- After all approved actions have confirmed outcomes, the approved summary is saved as
+  `ResolutionMemory` (`MEM-<case_id>`, replaced if written again).
 - The next case searches these memories (`recall_similar_cases`): up to three distinct
   earlier resolutions go to the Deep Agent (`similar_past_cases` tool) and into the report's
   "Similar past incidents" section. They inform; they never change the plan.
@@ -167,6 +168,4 @@ Desktop running adds the real PostgreSQL restart test.
 
 - "Can we protect our highest-priority customers?" is answered from the saved impact data; a
   dedicated reallocation calculation belongs to planning.
-- The AI investigation notes in the [sample incident report](sample-incident-report.md) (a real
-  full-stack run) can still contain wrong comparisons; they are marked unverified and never
-  change the plan.
+- The [sample incident report](sample-incident-report.md) records an earlier full-stack run.

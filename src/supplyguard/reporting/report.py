@@ -4,6 +4,7 @@ Built from templates over the saved case, not by the model, so every number and 
 report is one the workflow received from the owning component.
 """
 
+import json
 from collections.abc import Sequence
 from decimal import Decimal
 
@@ -60,7 +61,8 @@ def _load(state: dict):
 
 def completed_action_count(results: Sequence[ExecutionResult]) -> int:
     return sum(
-        result.status in (ExecutionStatus.SUCCEEDED, ExecutionStatus.ALREADY_EXECUTED)
+        result.status is ExecutionStatus.SUCCEEDED
+        or (result.status is ExecutionStatus.ALREADY_EXECUTED and result.executed_at is not None)
         for result in results
     )
 
@@ -80,6 +82,143 @@ def late_penalty_summary(impact: ImpactReport) -> str | None:
     )
 
 
+def operational_review(
+    intelligence: OperationalIntelligenceResult,
+    sensitivities: Sequence[dict] = (),
+    *,
+    order_limit: int | None = None,
+) -> list[str]:
+    impact = intelligence.impact
+    coverage = []
+    for position in sorted(
+        impact.coverage, key=lambda item: (item.factory_id is None, item.location_id)
+    ):
+        if position.projected_stockout_date is None:
+            continue
+        label = (
+            f"Factory stockout at {position.location_id} ({position.factory_id})"
+            if position.factory_id
+            else f"{position.location_id} stockout if supplying the full network alone"
+        )
+        coverage.append(
+            f"{label}: {position.projected_stockout_date} ({_sources(position.sources)})"
+        )
+    shortfall_sources = tuple(
+        source
+        for trace in impact.calculations
+        if trace.calculation == "projected_shortfall"
+        for source in trace.sources
+    )
+    order_sources = tuple(source for order in impact.at_risk_orders for source in order.sources)
+    figures = [
+        f"Usable stock: {impact.total_usable_units:,} units. "
+        f"Daily demand {_quantity(impact.daily_demand_units)} units.",
+        f"Projected shortfall: {impact.projected_shortfall_units:,} units "
+        f"({_sources(shortfall_sources or impact.sources)})",
+        f"Network stockout (pooled inventory): {impact.first_stockout_date or 'not projected'}",
+        *coverage,
+        f"Affected products: {', '.join(impact.affected_product_ids)}. "
+        f"Factories: {', '.join(impact.affected_factory_ids)}.",
+        f"Open customer orders at risk: {len(impact.at_risk_orders)} ({_sources(order_sources)})",
+        f"Baseline revenue exposure: {_eur(impact.revenue_at_risk_eur)} "
+        f"({_sources(order_sources)})",
+    ]
+    if penalties := late_penalty_summary(impact):
+        figures.append(penalties)
+    lines = ["## Operational impact", *_bullets(figures), ""]
+    if sensitivities:
+        scenarios = []
+        for case in sensitivities:
+            shortfall = case["projected_shortfall_units"]
+            value = f"{shortfall:,} units short" if shortfall is not None else "unavailable"
+            scenarios.append(f"{case['delay_days']}-day delay: {value}.")
+        lines += ["## Delay sensitivity", *_bullets(scenarios), ""]
+    orders = sorted(
+        impact.at_risk_orders, key=lambda row: (row.priority_tier, row.due_date, row.order_id)
+    )
+    if orders:
+        lines += [
+            "## Customer commitments at risk",
+            "| Order | Customer | Product | Due date | Tier | Source |",
+            "|---|---|---|---|---:|---|",
+            *[
+                f"| {row.order_id} | {row.customer_id} | {row.product_id} | "
+                f"{row.due_date} | {row.priority_tier} | {_sources(row.sources)} |"
+                for row in orders[:order_limit]
+            ],
+            "",
+        ]
+        if order_limit is not None and len(orders) > order_limit:
+            lines += [
+                f"Showing {order_limit} of {len(orders)} orders. The report lists all orders.",
+                "",
+            ]
+    lines += ["## External risk", *_bullets(_external_risk_lines(intelligence)), ""]
+    return lines
+
+
+def evidence_review(evidence: EvidenceBundle) -> list[str]:
+    return [
+        "## Conflicting evidence",
+        *_bullets(
+            [
+                f"{c.subject}: {c.description}"
+                f"{f' Resolution: {c.resolution_reason}' if c.resolution_reason else ''}"
+                for c in evidence.conflicts
+            ]
+        ),
+        "",
+    ]
+
+
+def _external_risk_lines(intelligence: OperationalIntelligenceResult) -> list[str]:
+    lines = []
+    if any(w.issue_type == "external_risk_unavailable" for w in intelligence.warnings):
+        lines.append(
+            "External risk checks were incomplete. Alert status is unknown for failed lookups."
+        )
+    elif not intelligence.external_risks:
+        return ["No relevant alerts returned by the external risk feed."]
+    for alert in intelligence.external_risks:
+        details = (
+            f"{alert.severity}, {alert.region or 'unspecified region'}, {alert.topic}. "
+            f"{alert.summary}"
+        )
+        # Display provider fields as literal text, even if they contain Markdown or HTML.
+        details = json.dumps(details, ensure_ascii=False)[1:-1].replace("`", "\\u0060")
+        lines.append(f"`{details}` ({_sources(alert.sources)})")
+    return lines
+
+
+def options_review(plan: RecoveryPlan, *, revised: bool = False) -> list[str]:
+    rows = [
+        "| Option | Recovery cost | Estimated revenue exposure | Uncovered units | "
+        "Warnings or rejection reasons |",
+        "|---|---|---|---|---|",
+    ]
+    rows += [
+        f"| {o.name} | {_eur(o.recovery_cost_eur)}"
+        f"{' (comparison only)' if o.rejection_reasons and not o.actions else ''} | "
+        f"{_eur(o.revenue_at_risk_eur)} | "
+        f"{o.uncovered_units:,} | {'; '.join((*o.policy_warnings, *o.rejection_reasons)) or '-'} |"
+        for o in plan.options
+    ]
+    recommended = next((o for o in plan.options if o.option_id == plan.recommended_option_id), None)
+    name = recommended.name if recommended else "No feasible option"
+    reason = plan.recommendation_reason.removeprefix(f"{name}: ")
+    lines = [
+        "## Original options compared" if revised else "## Options compared",
+        *rows,
+        "",
+        "Revenue estimates prorate the case exposure by uncovered units. "
+        "Customer due dates and order allocation are outside this estimate.",
+        "",
+    ]
+    if not revised:
+        lines += ["## Recommendation", f"{name}: {reason}", ""]
+    return lines
+
+
 def build_incident_report(state: dict) -> str:
     incident, intelligence, evidence, plan, request, decision, results = _load(state)
     revised = request is not None and request.payload_version > 1
@@ -94,6 +233,8 @@ def build_incident_report(state: dict) -> str:
         )
     elif decision and not decision.approved and not decision.is_modification:
         outcome = "The recommendation was rejected; nothing was executed."
+    elif decision and decision.approved:
+        outcome = "Execution could not be confirmed. See execution outcome and residual risks."
     else:
         outcome = "No action was executed."
     out += [
@@ -122,51 +263,9 @@ def build_incident_report(state: dict) -> str:
     out += ["## Facts and sources", *_bullets(facts), ""]
 
     if intelligence:
-        impact = intelligence.impact
-        penalties = late_penalty_summary(impact)
-        out += [
-            "## Operational impact",
-            *_bullets(
-                [
-                    f"Usable stock: {impact.total_usable_units:,} units; daily demand "
-                    f"{_quantity(impact.daily_demand_units)} units",
-                    f"Projected shortfall: {impact.projected_shortfall_units:,} units; "
-                    "first stockout "
-                    f"{impact.first_stockout_date or 'not projected'}",
-                    f"Affected products: {', '.join(impact.affected_product_ids)}; factories: "
-                    f"{', '.join(impact.affected_factory_ids)}",
-                    f"Open customer orders at risk: {len(impact.at_risk_orders)}",
-                    "Revenue at risk (exposure, not an expected loss): "
-                    f"{_eur(impact.revenue_at_risk_eur)}",
-                    f"Sources: {_sources(impact.sources)}",
-                    *([penalties] if penalties else []),
-                ]
-            ),
-            "",
-        ]
-
-    if sensitivities := state.get("delay_sensitivities"):
-        out += ["## Delay sensitivity", ""]
-        for scenario in sensitivities:
-            shortfall = scenario["projected_shortfall_units"]
-            estimate = (
-                f"{shortfall:,} units short" if shortfall is not None else "estimate unavailable"
-            )
-            out.append(f"- {scenario['delay_days']}-day delay: {estimate}.")
-        out.append("")
-
+        out += operational_review(intelligence, state.get("delay_sensitivities") or ())
     if evidence:
-        out += [
-            "## Conflicting evidence",
-            *_bullets(
-                [
-                    f"{c.subject}: {c.description}"
-                    f"{f' Resolution: {c.resolution_reason}' if c.resolution_reason else ''}"
-                    for c in evidence.conflicts
-                ]
-            ),
-            "",
-        ]
+        out += evidence_review(evidence)
 
     # From the user's own messages and from the retrieved documents.
     security = [SecurityFinding.model_validate(f) for f in state.get("security_findings") or []]
@@ -191,46 +290,15 @@ def build_incident_report(state: dict) -> str:
         "",
     ]
 
-    findings = state.get("investigation_findings") or []
-    out += [
-        "## AI investigation notes (unverified)",
-        "Written by the investigation agent from the case data, with their sources. They help "
-        "the reviewer but do not change the plan; the numbers above come from the calculations.",
-        "",
-        *_bullets(
-            [f"[{f['severity']}] {f['finding']} ({'; '.join(f['source_ids'])})" for f in findings]
-        ),
-        "",
-    ]
+    if intelligence and intelligence.dependencies.findings:
+        dependencies = [
+            f"{finding.summary} ({_sources(finding.sources)})"
+            for finding in intelligence.dependencies.findings
+        ]
+        out += ["## Dependency findings", *_bullets(dependencies), ""]
 
     if plan:
-        rows = [
-            "| Option | Recovery cost | Estimated revenue exposure | Uncovered units | "
-            "Rejection reasons |",
-            "|---|---|---|---|---|",
-        ]
-        rows += [
-            f"| {o.name} | {_eur(o.recovery_cost_eur)}"
-            f"{' (comparison only)' if o.rejection_reasons and not o.actions else ''} | "
-            f"{_eur(o.revenue_at_risk_eur)} | "
-            f"{o.uncovered_units:,} | {'; '.join(o.rejection_reasons) or '-'} |"
-            for o in plan.options
-        ]
-        recommended = next(
-            (o for o in plan.options if o.option_id == plan.recommended_option_id), None
-        )
-        name = recommended.name if recommended else "No feasible option"
-        reason = plan.recommendation_reason.removeprefix(f"{name}: ")
-        out += [
-            "## Original options compared" if revised else "## Options compared",
-            *rows,
-            "",
-            "Revenue estimates prorate the case exposure by uncovered units. "
-            "Customer due dates and order allocation are outside this estimate.",
-            "",
-        ]
-        if not revised:
-            out += ["## Recommendation", f"{name}: {reason}", ""]
+        out += options_review(plan, revised=revised)
 
     if request is not None and revised:
         out += [
@@ -280,7 +348,11 @@ def build_incident_report(state: dict) -> str:
 
     risks = list(plan.residual_risks) if plan and not revised else []
     if intelligence:
-        risks += [w.message for w in intelligence.warnings if w.severity != Severity.BLOCKING]
+        risks += [
+            w.message
+            for w in intelligence.warnings
+            if w.severity != Severity.BLOCKING and w.issue_type != "external_risk_unavailable"
+        ]
     risks += state.get("errors") or []
     out += ["## Residual risks", *_bullets(risks), ""]
 

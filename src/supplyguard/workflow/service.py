@@ -35,7 +35,11 @@ STEP_EVENTS = {
         "Incident details read.",
         ("incident", "security_findings"),
     ),
-    "investigate_impact": (UIEventType.PROGRESS, "Operational impact analysed.", ("intelligence",)),
+    "investigate_impact": (
+        UIEventType.PROGRESS,
+        "Operational impact analysed.",
+        ("intelligence", "delay_sensitivities"),
+    ),
     "collect_evidence": (UIEventType.EVIDENCE, "Documentary evidence collected.", ("evidence",)),
     "recall_similar_cases": (
         UIEventType.EVIDENCE,
@@ -173,11 +177,23 @@ class CaseWorkflow:
         state = await self._owned_state(case_id, authorization)
         pending = self._pending(state)
         if pending:
+            if pending["type"] == "approval":
+                context = {
+                    key: state.values[key]
+                    for key in ("evidence", "intelligence", "delay_sensitivities", "plan")
+                    if state.values.get(key) is not None
+                }
+                pending = {**pending, **context}
             yield self._pause_event(case_id, pending)
             return
         if state.next:
             async for event in self._run(case_id, None):
                 yield event
+            return
+        if report := state.values.get("report"):
+            yield _event(
+                case_id, UIEventType.OUTCOME, "resume", "Incident report ready.", {"report": report}
+            )
             return
         said = [m.content for m in state.values.get("messages", []) if isinstance(m, AIMessage)]
         yield _event(

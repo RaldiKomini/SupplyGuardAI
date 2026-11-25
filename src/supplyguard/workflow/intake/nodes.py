@@ -60,17 +60,27 @@ def make_read_incident(
     model: BaseChatModel, master_data: MasterDataService, content_safety: ContentSafetyService
 ):
     async def read_incident(state: CaseState) -> dict:
-        # The newest user message is untrusted text: report embedded instructions, never obey them.
-        latest = next(m for m in reversed(state["messages"]) if isinstance(m, HumanMessage))
-        findings = content_safety.scan(str(latest.content), "user_message")
-        found = {"security_findings": [f.model_dump(mode="json") for f in findings]}
+        history = []
+        replacements = []
+        findings = []
+        for message in state["messages"]:
+            if isinstance(message, HumanMessage):
+                clean, message_findings = content_safety.sanitize(
+                    str(message.content), "user_message"
+                )
+                findings.extend(f.model_dump(mode="json") for f in message_findings)
+                if clean != message.content:
+                    message = message.model_copy(update={"content": clean})
+                    replacements.append(message)
+            history.append(message)
+        found = {"security_findings": findings, "messages": replacements}
 
-        extraction = await extract(model, state["messages"])
+        extraction = await extract(model, history)
         supplier, component, questions = await resolve(extraction, master_data)
         if questions:
             return {"questions": questions, "status": CaseStatus.AWAITING_INPUT.value, **found}
 
-        first_message = next(m for m in state["messages"] if isinstance(m, HumanMessage))
+        first_message = next(m for m in history if isinstance(m, HumanMessage))
         incident = confirm_incident(
             case_id=state["case_id"],
             user_id=state["user_id"],

@@ -10,10 +10,9 @@ from supplyguard.contracts import (
     ApprovalRequest,
     CaseStatus,
     ExecutionResult,
-    ExecutionStatus,
     RecoveryPlan,
 )
-from supplyguard.reporting import build_incident_report, resolution_memory
+from supplyguard.reporting import build_incident_report, completed_action_count, resolution_memory
 from supplyguard.workflow.services import WorkflowServices
 from supplyguard.workflow.state import CaseState
 
@@ -78,8 +77,23 @@ def make_approval_steps(services: WorkflowServices) -> dict:
         return {"approval_request": new_request.model_dump(mode="json"), "decision": None}
 
     async def execute(state: CaseState) -> dict:
+        request = _request(state)
         try:
-            results = await services.execution.execute(_request(state), _decision(state))
+            results = await services.execution.execute(request, _decision(state))
+            expected = {action.action_id: action.action_type for action in request.actions}
+            received = {result.action_id: result.action_type for result in results}
+            if (
+                received != expected
+                or len(results) != len(expected)
+                or any(
+                    result.case_id != request.case_id
+                    or result.approval_request_id != request.approval_request_id
+                    for result in results
+                )
+            ):
+                raise ValueError(
+                    "the execution service did not confirm the exact approved action set"
+                )
         except Exception as error:
             return {"execution_results": [], "errors": [f"Execution failed: {error}"]}
         return {"execution_results": [r.model_dump(mode="json") for r in results]}
@@ -112,11 +126,9 @@ def finish(state: CaseState) -> dict:
         return {"messages": [AIMessage(text)], "status": CaseStatus.COMPLETED.value}
 
     results = [ExecutionResult.model_validate(r) for r in state["execution_results"]]
-    done = (ExecutionStatus.SUCCEEDED, ExecutionStatus.ALREADY_EXECUTED)
-    failed = [r for r in results if r.status not in done]
     lines = [f"- {r.action_type.value}: {r.status.value} - {r.message}" for r in results]
     lines += [f"- {e}" for e in state.get("errors") or []]
-    if failed or not results:
+    if not results or completed_action_count(results) != len(results):
         text = "Some approved actions could not be completed:\n" + "\n".join(lines)
         return {"messages": [AIMessage(text)], "status": CaseStatus.FAILED.value}
     text = "The approved actions were carried out:\n" + "\n".join(lines)

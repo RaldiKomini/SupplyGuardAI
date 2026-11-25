@@ -26,10 +26,14 @@ class McpRiskClient:
         ):
             await session.initialize()
             result = await session.call_tool("get_external_risk_alerts", {"region": region})
+        if result.isError:
+            raise RuntimeError("External risk MCP could not read the HTTP feed.")
         payload: Any = getattr(result, "structuredContent", None)
         if payload is None:
             content = getattr(result, "content", ())
             text = next((item.text for item in content if hasattr(item, "text")), "{}")
             payload = json.loads(text)
-        records = payload.get("alerts", ())
+        records = payload.get("alerts") if isinstance(payload, dict) else None
+        if not isinstance(records, list):
+            raise RuntimeError("External risk MCP returned an invalid alert payload.")
         return tuple(ProviderAlert.model_validate(record) for record in records)

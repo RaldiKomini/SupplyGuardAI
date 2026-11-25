@@ -1,8 +1,12 @@
+from contextlib import asynccontextmanager
 from datetime import UTC, datetime, timedelta
+from unittest.mock import AsyncMock
 
 import pytest
+from mcp.types import CallToolResult, TextContent
 
 from supplyguard.contracts import Severity
+from supplyguard.external_risk import mcp_client
 from supplyguard.external_risk.models import ProviderAlert
 from supplyguard.external_risk.service import ExternalRiskService
 
@@ -82,3 +86,39 @@ async def test_provider_failure_degrades_to_warning() -> None:
     assert evidence == ()
     assert warnings[0].severity is Severity.WARNING
     assert warnings[0].issue_type == "external_risk_unavailable"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "result",
+    [
+        CallToolResult(
+            isError=True,
+            content=[TextContent(type="text", text="Error executing tool: connection failed")],
+        ),
+        CallToolResult(content=[], structuredContent={}),
+    ],
+)
+async def test_mcp_failure_or_invalid_payload_is_reported_as_unavailable(
+    monkeypatch, result
+) -> None:
+    session = AsyncMock()
+    session.call_tool.return_value = result
+
+    @asynccontextmanager
+    async def transport(url):
+        yield None, None, None
+
+    @asynccontextmanager
+    async def open_session(*args, **kwargs):
+        yield session
+
+    monkeypatch.setattr(mcp_client, "streamable_http_client", transport)
+    monkeypatch.setattr(mcp_client, "ClientSession", open_session)
+
+    service = ExternalRiskService(mcp_client.McpRiskClient("http://localhost/mcp"))
+    evidence, warnings = await service.evidence(upstream_manufacturer_ids=(), region="TW")
+
+    assert evidence == ()
+    assert warnings[0].issue_type == "external_risk_unavailable"
+    assert "JSONDecodeError" not in warnings[0].message

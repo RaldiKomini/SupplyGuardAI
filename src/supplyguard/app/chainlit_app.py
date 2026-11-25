@@ -17,12 +17,16 @@ from supplyguard.contracts import (
     ApprovalRequest,
     AuthorizationContext,
     CaseStatus,
+    EvidenceBundle,
     IncidentInput,
+    OperationalIntelligenceResult,
     RecoveryAction,
     RecoveryActionType,
+    RecoveryPlan,
     UIEvent,
     UIEventType,
 )
+from supplyguard.reporting import evidence_review, operational_review, options_review
 from supplyguard.workflow.checkpoints import use_windows_compatible_event_loop
 from supplyguard.workflow.runtime import open_approval_source, open_case_workflow
 
@@ -388,12 +392,35 @@ def approval_summary(request: ApprovalRequest) -> str:
 
 async def _show(events: AsyncIterator[UIEvent]) -> None:
     async for event in events:
+        sections = _review_sections(event.payload)
+        if sections:
+            await cl.Message(content="\n".join(sections)).send()
         if event.event_type is UIEventType.APPROVAL:
             await _ask_for_approval(event)
         elif event.payload.get("report"):
             await cl.Message(content=str(event.payload["report"])).send()
-        else:
+        elif not sections:
             await cl.Message(content=event.message).send()
+
+
+def _review_sections(payload: dict) -> list[str]:
+    sections: list[str] = []
+    if payload.get("intelligence"):
+        intelligence = OperationalIntelligenceResult.model_validate(payload["intelligence"])
+        sections += operational_review(
+            intelligence, payload.get("delay_sensitivities") or (), order_limit=5
+        )
+    if payload.get("evidence"):
+        evidence = EvidenceBundle.model_validate(payload["evidence"])
+        sections += evidence_review(evidence)
+        if findings := tuple(finding for finding in evidence.security_findings if finding.blocked):
+            sections += [
+                f"Blocked suspicious content in {len(findings)} findings from retrieved documents.",
+                "",
+            ]
+    if payload.get("plan"):
+        sections += options_review(RecoveryPlan.model_validate(payload["plan"]))
+    return sections
 
 
 async def _ask_for_approval(event: UIEvent) -> None:

@@ -241,6 +241,40 @@ def test_approval_pause_keeps_the_request_on_the_server(session, sent) -> None:
     assert all(action.payload == {"approval_request_id": "req-1"} for action in sent[0].actions)
 
 
+def test_owner_sees_conflicts_and_options_before_approval_buttons(session, sent) -> None:
+    event = _approval_event()
+    context = {
+        "evidence": {
+            "case_id": event.case_id,
+            "query": "supplier delay",
+            "items": [],
+            "conflicts": [
+                {
+                    "subject": "S001.delay_days",
+                    "description": "Formal notice says 12 days.",
+                    "conflicting_evidence_ids": ["email"],
+                }
+            ],
+        },
+        "plan": {
+            "case_id": event.case_id,
+            "options": [],
+            "recommended_option_id": None,
+            "recommendation_reason": "No feasible option",
+        },
+    }
+    approval = event.model_copy(update={"payload": {**event.payload, **context}})
+
+    asyncio.run(chainlit_app._show(_events(approval)))
+
+    preview, buttons = sent
+    assert (
+        "Formal notice says 12 days." in preview.content
+        and "## Options compared" in preview.content
+    )
+    assert buttons.actions[0].name == "approve_request"
+
+
 def test_matching_decision_is_submitted_and_cleared(session, service, sent) -> None:
     asyncio.run(chainlit_app._decide(_button("req-1"), approved=True))
 

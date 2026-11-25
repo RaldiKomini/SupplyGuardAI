@@ -70,7 +70,7 @@ async def _execute_one(
     stored = await store.get(key)
     if stored is not None:
         # A replay returns the stored outcome; the store itself is not changed.
-        return stored.model_copy(update={"status": ExecutionStatus.ALREADY_EXECUTED})
+        return _replay(stored)
     if action.action_type not in SIMULATED_ERP:
         return _result(
             request,
@@ -79,11 +79,14 @@ async def _execute_one(
             f"{action.action_type} is not a procurement write",
         )
     if not await store.claim(key, request, action):
+        stored = await store.get(key)
+        if stored is not None:
+            return _replay(stored)
         return _result(
             request,
             action,
-            ExecutionStatus.ALREADY_EXECUTED,
-            "another run is executing this action",
+            ExecutionStatus.FAILED,
+            "An execution claim exists without a confirmed outcome. Reconcile it before retrying.",
         )
     reference = f"{SIMULATED_ERP[action.action_type]}-{request.case_id}-{action.action_id}"
     result = _result(
@@ -96,6 +99,12 @@ async def _execute_one(
     )
     await store.complete(result)
     return result
+
+
+def _replay(stored: ExecutionResult) -> ExecutionResult:
+    if stored.status is ExecutionStatus.SUCCEEDED:
+        return stored.model_copy(update={"status": ExecutionStatus.ALREADY_EXECUTED})
+    return stored
 
 
 def rejected_results(request: ApprovalRequest, message: str) -> tuple[ExecutionResult, ...]:

@@ -15,7 +15,11 @@ from supplyguard.contracts import (
     RecoveryActionType,
     RecoveryOption,
 )
-from supplyguard.procurement.execution import InMemoryExecutionStore, execute_approved
+from supplyguard.procurement.execution import (
+    InMemoryExecutionStore,
+    execute_approved,
+    idempotency_key,
+)
 
 POLICY = load_approval_policy(
     Path(__file__).parents[2] / "support-data" / "config" / "policies.json"
@@ -82,6 +86,19 @@ async def test_retry_returns_stored_outcome_without_writing_again() -> None:
     assert [r.status for r in second] == [ExecutionStatus.ALREADY_EXECUTED] * 2
     assert [r.external_reference for r in second] == [r.external_reference for r in first]
     assert all(r.status == ExecutionStatus.SUCCEEDED for r in store.results.values())
+
+
+@pytest.mark.asyncio
+async def test_unfinished_claim_is_neither_success_nor_a_second_write() -> None:
+    store = InMemoryExecutionStore()
+    for action in REQUEST.actions:
+        assert await store.claim(idempotency_key(REQUEST, action), REQUEST, action)
+
+    results = await execute_approved(REQUEST, _decision(), store, now=NOW)
+
+    assert all(result.status is ExecutionStatus.FAILED for result in results)
+    assert all(result.external_reference is None for result in results)
+    assert not store.results
 
 
 @pytest.mark.asyncio

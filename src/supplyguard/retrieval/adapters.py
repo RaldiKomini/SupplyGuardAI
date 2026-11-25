@@ -16,7 +16,7 @@ from pydantic import ValidationError
 
 from supplyguard.contracts import AuthorizationContext, SecurityFinding
 from supplyguard.contracts.memory import ResolutionMemory
-from supplyguard.guardrails.injection import scan_text
+from supplyguard.guardrails.injection import scan_and_sanitize, scan_text
 from supplyguard.guardrails.metadata import SAFE_IDENTIFIER
 from supplyguard.retrieval.contract_mapping import to_security_findings
 from supplyguard.retrieval.ingestion import parse_memory_chunk
@@ -36,6 +36,11 @@ class GuardrailContentSafetyService:
         # be a plain identifier (an attack hidden in it would otherwise reach a prompt).
         safe_id = source_id if SAFE_IDENTIFIER.match(source_id or "") else "untrusted_input"
         return to_security_findings(scan_text(text, safe_id))
+
+    def sanitize(self, text: str, source_id: str) -> tuple[str, tuple[SecurityFinding, ...]]:
+        safe_id = source_id if SAFE_IDENTIFIER.match(source_id or "") else "untrusted_input"
+        clean, findings = scan_and_sanitize(text, safe_id)
+        return clean, to_security_findings(findings)
 
 
 class EvidenceResolutionMemoryStore:
