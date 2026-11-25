@@ -94,7 +94,17 @@ uv run ruff check .
 uv run ruff format --check .
 ```
 
-Copy `.env.example` to `.env` when service implementation begins. Never commit `.env` or credentials.
+## Run the whole system
+
+Copy `.env.example` to `.env` and fill in the secrets and the model settings. Never commit `.env` or credentials. Then:
+
+```powershell
+docker compose --profile app up --build -d --wait
+```
+
+This starts PostgreSQL, Neo4j and ChromaDB; a one-shot `setup` container runs the migrations, loads the operational data and the graph and indexes the documents (every step can be run again safely); then the risk feed, the external-risk MCP, the procurement MCP and the app start. Open http://127.0.0.1:8000.
+
+Evaluation (all 105 cases, against the running stack): `uv run --env-file .env python -m supplyguard.evaluation.langsmith_experiment --local`. Results: [docs/evaluation/results.md](docs/evaluation/results.md).
 
 ## Working agreement
 

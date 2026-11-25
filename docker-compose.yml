@@ -2,11 +2,42 @@ name: supplyguard
 
 # Start infrastructure:  docker compose up -d --wait
 # Start everything:      docker compose --profile app up --build -d --wait
+#   (also runs migrations, loads the data and indexes the documents once, then starts
+#   the risk feed, both MCP servers and the app on http://127.0.0.1:8000; set APP_PORT
+#   in .env if port 8000 is taken)
 # Copy .env.example to .env first. Database and account secrets have no defaults. The app
 # refuses to start without CHAINLIT_AUTH_SECRET, and accounts with an empty password cannot sign in.
 
 x-postgres-password: &postgres_password ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}
 x-neo4j-password: &neo4j_password ${NEO4J_PASSWORD:?set NEO4J_PASSWORD in .env}
+
+# Settings every container built from this repository needs.
+x-app-env: &app_env
+  APP_ENV: ${APP_ENV:-development}
+  LOG_LEVEL: ${LOG_LEVEL:-INFO}
+  DATABASE_URL: postgresql://${POSTGRES_USER:-supplyguard}:${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}@postgres:5432/${POSTGRES_DB:-supplyguard}
+  NEO4J_URI: bolt://neo4j:7687
+  NEO4J_USER: ${NEO4J_USER:-neo4j}
+  NEO4J_PASSWORD: *neo4j_password
+  CHROMA_HOST: chroma
+  CHROMA_PORT: "8000"
+  EVIDENCE_BACKEND: ${EVIDENCE_BACKEND:-pgvector}
+  EMBEDDINGS_PROVIDER: ${EMBEDDINGS_PROVIDER:-hash}
+  EMBEDDINGS_MODEL: ${EMBEDDINGS_MODEL:-}
+  MODEL_PROVIDER: ${MODEL_PROVIDER:-}
+  MODEL_NAME: ${MODEL_NAME:-}
+  MODEL_BASE_URL: ${MODEL_BASE_URL:-}
+  MODEL_API_KEY: ${MODEL_API_KEY:-}
+  OPENAI_API_VERSION: ${OPENAI_API_VERSION:-}
+  PROCUREMENT_MCP_URL: http://procurement-mcp:8100/mcp
+  EXTERNAL_RISK_MCP_URL: http://risk-mcp:8101/mcp
+  EXTERNAL_RISK_FEED_URL: http://risk-feed:8003
+
+# A container is healthy once something listens on its port.
+x-port-check: &port_check
+  interval: 3s
+  timeout: 5s
+  retries: 30
 
 services:
   postgres:
@@ -58,18 +89,7 @@ services:
     build: .
     restart: unless-stopped
     environment:
-      APP_ENV: ${APP_ENV:-development}
-      LOG_LEVEL: ${LOG_LEVEL:-INFO}
-      DATABASE_URL: postgresql://${POSTGRES_USER:-supplyguard}:${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}@postgres:5432/${POSTGRES_DB:-supplyguard}
-      NEO4J_URI: bolt://neo4j:7687
-      NEO4J_USER: ${NEO4J_USER:-neo4j}
-      NEO4J_PASSWORD: *neo4j_password
-      CHROMA_HOST: chroma
-      CHROMA_PORT: "8000"
-      MODEL_PROVIDER: ${MODEL_PROVIDER:-}
-      MODEL_NAME: ${MODEL_NAME:-}
-      MODEL_BASE_URL: ${MODEL_BASE_URL:-}
-      MODEL_API_KEY: ${MODEL_API_KEY:-}
+      <<: *app_env
       LANGSMITH_TRACING: ${LANGSMITH_TRACING:-false}
       LANGSMITH_API_KEY: ${LANGSMITH_API_KEY:-}
       LANGSMITH_PROJECT: ${LANGSMITH_PROJECT:-supplyguard-ai}
@@ -81,7 +101,29 @@ services:
       AUTH_PASSWORD_U_FD_01: ${AUTH_PASSWORD_U_FD_01:-}
       AUTH_PASSWORD_U_RO_01: ${AUTH_PASSWORD_U_RO_01:-}
     ports:
-      - "127.0.0.1:8000:8000"
+      - "127.0.0.1:${APP_PORT:-8000}:8000"
+    depends_on:
+      setup:
+        condition: service_completed_successfully
+      procurement-mcp:
+        condition: service_healthy
+      risk-mcp:
+        condition: service_healthy
+
+  # One-shot: schema, operational data, graph and document index. Every step is idempotent.
+  setup:
+    profiles: ["app"]
+    build: .
+    environment:
+      <<: *app_env
+    command:
+      - sh
+      - -c
+      - >-
+        alembic upgrade head &&
+        supplyguard-load-data support-data/structured &&
+        supplyguard-load-graph support-data/structured &&
+        python scripts/index_documents.py --support-data support-data --backend all
     depends_on:
       postgres:
         condition: service_healthy
@@ -89,6 +131,48 @@ services:
         condition: service_healthy
       chroma:
         condition: service_healthy
+
+  # The supplied external information service (support-data/external_service).
+  risk-feed:
+    profiles: ["app"]
+    build: .
+    restart: unless-stopped
+    command: ["python", "support-data/external_service/external_info_service.py", "8003"]
+    healthcheck:
+      <<: *port_check
+      test: ["CMD", "python", "-c", "import socket; socket.create_connection(('127.0.0.1', 8003), 3)"]
+
+  risk-mcp:
+    profiles: ["app"]
+    build: .
+    restart: unless-stopped
+    environment:
+      <<: *app_env
+      EXTERNAL_RISK_MCP_HOST: 0.0.0.0
+      EXTERNAL_RISK_MCP_PORT: "8101"
+    command: ["supplyguard-risk-mcp"]
+    healthcheck:
+      <<: *port_check
+      test: ["CMD", "python", "-c", "import socket; socket.create_connection(('127.0.0.1', 8101), 3)"]
+    depends_on:
+      risk-feed:
+        condition: service_healthy
+
+  procurement-mcp:
+    profiles: ["app"]
+    build: .
+    restart: unless-stopped
+    environment:
+      <<: *app_env
+      PROCUREMENT_MCP_HOST: 0.0.0.0
+      PROCUREMENT_MCP_PORT: "8100"
+    command: ["python", "-m", "supplyguard.procurement.mcp_server"]
+    healthcheck:
+      <<: *port_check
+      test: ["CMD", "python", "-c", "import socket; socket.create_connection(('127.0.0.1', 8100), 3)"]
+    depends_on:
+      setup:
+        condition: service_completed_successfully
 
 volumes:
   postgres_data:
