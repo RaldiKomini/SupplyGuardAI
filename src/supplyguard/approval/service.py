@@ -71,16 +71,9 @@ class DeterministicApprovalService:
 
         The caller (the application layer) has authenticated the user and their role.
         """
-        stored = await self.records.load(request.approval_request_id)
-        if stored is None:
-            raise ValueError(f"unknown approval request {request.approval_request_id}")
-        stored_request, _ = stored
-        if (
-            decision.approval_request_id != stored_request.approval_request_id
-            or decision.case_id != stored_request.case_id
-            or decision.payload_hash != stored_request.payload_hash
-        ):
-            raise ValueError("the decision does not match the stored request and payload")
+        if decision.is_modification:
+            raise ValueError("an edit must be recorded together with its revised request")
+        stored_request = await self._request_for_decision(request, decision)
         if not decision.approver_user_ids:
             raise ValueError("a decision must name the user who made it")
         roles = decision.approver_roles or ("",) * len(decision.approver_user_ids)
@@ -91,14 +84,42 @@ class DeterministicApprovalService:
             if unexpected:
                 raise ValueError(f"role not required for this request: {sorted(unexpected)}")
 
-        kind = (
-            "approve" if decision.approved else "modify" if decision.is_modification else "reject"
-        )
+        kind = "approve" if decision.approved else "reject"
         for user_id, role in zip(decision.approver_user_ids, roles, strict=True):
             record = DecisionRecord(user_id, role, kind, decision.decided_at)
             await self.records.save_decision(stored_request.approval_request_id, record)
         _, combined = await self.records.load(stored_request.approval_request_id)
         return combined
+
+    async def record_modification(
+        self, request: ApprovalRequest, decision: ApprovalDecision
+    ) -> ApprovalRequest:
+        stored = await self._request_for_decision(request, decision)
+        if not decision.is_modification:
+            raise ValueError("the decision must propose an edit")
+        if len(decision.approver_user_ids) != 1 or len(decision.approver_roles) != 1:
+            raise ValueError("an edit must name exactly one approver and role")
+        role = decision.approver_roles[0]
+        if role not in stored.required_approver_roles:
+            raise ValueError(f"role not required for this request: {role}")
+        revision = await self._build_revision(stored, decision.modified_actions)
+        record = DecisionRecord(decision.approver_user_ids[0], role, "modify", decision.decided_at)
+        return await self.records.save_revision(stored.approval_request_id, record, revision)
+
+    async def _request_for_decision(
+        self, request: ApprovalRequest, decision: ApprovalDecision
+    ) -> ApprovalRequest:
+        stored = await self.records.load(request.approval_request_id)
+        if stored is None:
+            raise ValueError(f"unknown approval request {request.approval_request_id}")
+        stored_request, _ = stored
+        if (
+            decision.approval_request_id != stored_request.approval_request_id
+            or decision.case_id != stored_request.case_id
+            or decision.payload_hash != stored_request.payload_hash
+        ):
+            raise ValueError("the decision does not match the stored request and payload")
+        return stored_request
 
     async def revalidate(
         self, request: ApprovalRequest, modified_actions: tuple[RecoveryAction, ...]
@@ -106,6 +127,13 @@ class DeterministicApprovalService:
         """Check and re-price an edit; store it as a new request that needs fresh approval."""
         if await self.records.latest_version(request.case_id) > request.payload_version:
             raise ValueError("a newer approval request exists for this case; edit that one")
+        new_request = await self._build_revision(request, modified_actions)
+        await self.records.save_request(new_request)
+        return new_request
+
+    async def _build_revision(
+        self, request: ApprovalRequest, modified_actions: tuple[RecoveryAction, ...]
+    ) -> ApprovalRequest:
         incident, impact = await self.case_context(request.case_id)
         inputs = PlanningInputs(
             incident=incident,
@@ -113,8 +141,6 @@ class DeterministicApprovalService:
             costs=self.costs,
             transfer_cost_eur_per_unit=self.transfer_cost_eur_per_unit,
         )
-        new_request = revalidate_request(
+        return revalidate_request(
             request, modified_actions, inputs=inputs, policy=self.policy, requested_at=self.clock()
         )
-        await self.records.save_request(new_request)
-        return new_request

@@ -56,14 +56,7 @@ def make_approval_steps(services: WorkflowServices) -> dict:
         except ValueError as error:  # e.g. the approvers do not cover the required roles
             return {
                 "decision_problem": str(error),
-                "revalidated_request": None,
                 "messages": [AIMessage(f"The decision was not accepted: {error}")],
-            }
-        if revised := state.get("revalidated_request"):
-            return {
-                "approval_request": revised,
-                "revalidated_request": None,
-                "decision": None,
             }
         missing = set(_request(state).required_approver_roles) - set(recorded.approver_roles)
         if _decision(state).approved and not recorded.approved and missing:
@@ -73,15 +66,15 @@ def make_approval_steps(services: WorkflowServices) -> dict:
         return {"decision": recorded.model_dump(mode="json")}
 
     async def revalidate(state: CaseState) -> dict:
-        """Prepare the revised request before recording a modification on the original."""
+        """Validate and record the edit together with its replacement request."""
         try:
-            new_request = await services.approval.revalidate(
-                _request(state), _decision(state).modified_actions
+            new_request = await services.approval.record_modification(
+                _request(state), _decision(state)
             )
         except ValueError as error:  # RevalidationError is a ValueError
             text = f"The change could not be accepted: {error}. The current request still stands."
-            return {"messages": [AIMessage(text)], "decision": None, "revalidated_request": None}
-        return {"revalidated_request": new_request.model_dump(mode="json")}
+            return {"messages": [AIMessage(text)], "decision": None}
+        return {"approval_request": new_request.model_dump(mode="json"), "decision": None}
 
     async def execute(state: CaseState) -> dict:
         try:
@@ -103,10 +96,6 @@ def route_after_await(state: CaseState) -> str:
     if state.get("decision_problem"):
         return "await_approval"
     return "revalidate" if _decision(state).is_modification else "record_decision"
-
-
-def route_after_revalidation(state: CaseState) -> str:
-    return "record_decision" if state.get("revalidated_request") else "await_approval"
 
 
 def route_after_record(state: CaseState) -> str:

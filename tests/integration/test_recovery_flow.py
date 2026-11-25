@@ -79,6 +79,18 @@ async def run_flow(url: str) -> None:
         assert request.total_cost_eur == Decimal("30378.00")
 
         await approvals.record_decision(request, _vote(request, "u-pm-01", "procurement_manager"))
+        edited = tuple(
+            action.model_copy(update={"payload": {**action.payload, "qty": 2000}})
+            if action.payload.get("supplier_id") == "S004"
+            else action
+            for action in request.actions
+        )
+        refused = _vote(request, "u-pm-01", "procurement_manager").model_copy(
+            update={"approved": False, "modified_actions": edited}
+        )
+        with pytest.raises(ValueError, match="already decided"):
+            await approvals.record_modification(request, refused)
+        assert await records.latest_version(request.case_id) == 1
         await approvals.record_decision(request, _vote(request, "u-fc-01", "finance_controller"))
         stored_request, decision = await records.load(request.approval_request_id)
         assert decision.approved
@@ -92,5 +104,14 @@ async def run_flow(url: str) -> None:
         async with database.connection() as connection:
             rows = await connection.scalar(select(func.count()).select_from(executed_actions))
         assert rows == len(request.actions)
+
+        other = await approvals.create_request(plan.model_copy(update={"case_id": "CASE-EDIT"}))
+        edit = refused.model_copy(
+            update={"approval_request_id": other.approval_request_id, "case_id": other.case_id}
+        )
+        revised = await approvals.record_modification(other, edit)
+        assert revised.payload_version == 2
+        assert await approvals.record_modification(other, edit) == revised
+        assert await records.latest_version(other.case_id) == 2
     finally:
         await database.close()

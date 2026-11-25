@@ -23,7 +23,6 @@ class CaseState(TypedDict, total=False):
     evidence: dict | None  # EvidenceBundle (George)
     plan: dict | None  # RecoveryPlan (Athanasia)
     approval_request: dict | None  # ApprovalRequest: the exact payload shown to the approver
-    revalidated_request: dict | None  # Proposed revision until its modification is recorded
     decision: dict | None  # the latest ApprovalDecision
     decision_problem: str | None  # why the latest decision was not accepted
     execution_results: list[dict] | None  # one ExecutionResult per action
