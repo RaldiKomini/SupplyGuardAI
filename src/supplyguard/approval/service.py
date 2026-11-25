@@ -94,6 +94,7 @@ class DeterministicApprovalService:
         _, combined = await self.records.load(stored_request.approval_request_id)
         return combined
 
+    @traced("approval.record_modification", component="approval")
     async def record_modification(
         self, request: ApprovalRequest, decision: ApprovalDecision
     ) -> ApprovalRequest:
