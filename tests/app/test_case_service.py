@@ -137,6 +137,12 @@ class InMemoryApprovals:
     async def get_request(self, approval_request_id: str) -> ApprovalRequest | None:
         return self.requests.get(approval_request_id)
 
+    async def list_open_for(self, role: str, user_id: str) -> tuple[ApprovalRequest, ...]:
+        return tuple(r for r in self.requests.values() if role in r.required_approver_roles)
+
+    async def has_decided(self, approval_request_id: str, user_id: str) -> bool:
+        return False
+
 
 def _registry(environ: dict[str, str] | None = None) -> AccessRegistry:
     return AccessRegistry(load_access_config(CONFIG_PATH), environ=environ or PASSWORDS)

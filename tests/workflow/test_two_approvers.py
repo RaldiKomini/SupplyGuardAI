@@ -160,6 +160,12 @@ def test_finance_can_submit_second_approval_without_case_access(
             saved = await approval.records.load(approval_request_id)
             return saved[0] if saved else None
 
+        async def list_open_for(self, role, user_id):
+            return ()
+
+        async def has_decided(self, approval_request_id, user_id):
+            return False
+
     finance = AuthorizationContext(user_id="u-fc-01", role="finance_controller")
     decision = ApprovalDecision(
         approval_request_id=request["approval_request_id"],
