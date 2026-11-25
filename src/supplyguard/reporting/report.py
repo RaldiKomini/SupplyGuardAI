@@ -157,6 +157,54 @@ def operational_review(
     return lines
 
 
+def delay_conflict_highlight(state: dict) -> str | None:
+    """Put the resolved delay conflict and its tested scenarios next to approval."""
+    scenarios = state.get("delay_sensitivities")
+    if not scenarios or not all(state.get(key) for key in ("incident", "evidence", "intelligence")):
+        return None
+    incident = ConfirmedIncident.model_validate(state["incident"])
+    evidence = EvidenceBundle.model_validate(state["evidence"])
+    impact = OperationalIntelligenceResult.model_validate(state["intelligence"]).impact
+    items = {item.evidence_id: item for item in evidence.items}
+    for conflict in evidence.conflicts:
+        selected = items.get(conflict.selected_evidence_id)
+        if (
+            conflict.subject == f"{incident.supplier_id}.delay_days"
+            and conflict.planning_value == incident.delay_days
+            and selected
+            and selected.document_type == "supplier_notice"
+            and selected.status != "superseded"
+        ):
+            comparisons = [
+                scenario
+                for scenario in scenarios
+                if scenario["delay_days"] in conflict.sensitivity_values
+            ]
+            if not comparisons:
+                continue
+            sources = dict.fromkeys(
+                items[evidence_id].source.source_id if evidence_id in items else evidence_id
+                for evidence_id in conflict.conflicting_evidence_ids
+            )
+            lines = [
+                "> **Supplier sources disagree**",
+                ">",
+                f"> **Planning baseline · {incident.delay_days} days · "
+                f"{impact.projected_shortfall_units:,} units short**  ",
+                f"> Supplier notice `{selected.source.source_id}`",
+            ]
+            for scenario in comparisons:
+                days = scenario["delay_days"]
+                shortfall = scenario["projected_shortfall_units"]
+                estimate = f"{shortfall:,} units short" if shortfall is not None else "unavailable"
+                lines += [">", f"> **Sensitivity · {days} days · {estimate}**  "]
+            citations = ", ".join(f"`{source}`" for source in sources)
+            if citations:
+                lines += [f"> Conflicting evidence {citations}"]
+            return "\n".join(lines)
+    return None
+
+
 def evidence_review(evidence: EvidenceBundle) -> list[str]:
     return [
         "## Conflicting evidence",

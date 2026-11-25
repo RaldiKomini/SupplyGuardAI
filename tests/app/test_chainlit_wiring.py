@@ -263,6 +263,7 @@ def test_owner_sees_conflicts_and_options_before_approval_buttons(session, sent)
             "recommendation_reason": "No feasible option",
         },
     }
+    context["delay_conflict_highlight"] = "> **Supplier sources disagree**"
     approval = event.model_copy(update={"payload": {**event.payload, **context}})
 
     asyncio.run(chainlit_app._show(_events(approval)))
@@ -272,6 +273,7 @@ def test_owner_sees_conflicts_and_options_before_approval_buttons(session, sent)
         "Formal notice says 12 days." in preview.content
         and "## Options compared" in preview.content
     )
+    assert buttons.content.startswith("> **Supplier sources disagree**")
     assert buttons.actions[0].name == "approve_request"
 
 

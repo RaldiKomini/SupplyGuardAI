@@ -424,7 +424,10 @@ def _review_sections(payload: dict) -> list[str]:
 
 
 async def _ask_for_approval(event: UIEvent) -> None:
-    await _prompt_approval(ApprovalRequest.model_validate(event.payload["request"]), event.message)
+    intro = event.message
+    if highlight := event.payload.get("delay_conflict_highlight"):
+        intro = f"{highlight}\n\n{intro}"
+    await _prompt_approval(ApprovalRequest.model_validate(event.payload["request"]), intro)
 
 
 async def _prompt_approval(request: ApprovalRequest, intro: str) -> None:

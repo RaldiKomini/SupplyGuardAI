@@ -162,6 +162,7 @@ def test_resume_shows_the_pending_approval_again(scripted_model, make_services):
     assert events[0].payload["intelligence"]["impact"]["projected_shortfall_units"] == 5350
     assert events[0].payload["evidence"]["case_id"] == "CASE-1"
     assert events[0].payload["plan"]["recommended_option_id"] == "OPT-1"
+    assert "delay_conflict_highlight" not in events[0].payload
 
 
 def test_resume_continues_from_checkpoint_before_execution(scripted_model, make_services):
@@ -350,6 +351,12 @@ def test_notice_drives_the_plan_and_email_is_a_sensitivity(scripted_model, make_
     assert impact["intelligence"]["impact"]["projected_shortfall_units"] == 5350
     state = asyncio.run(flow.case_values("CASE-1"))
     assert state["delay_sensitivities"] == [{"delay_days": 16, "projected_shortfall_units": 7150}]
+    highlight = events[-1].payload["delay_conflict_highlight"]
+    assert "Planning baseline · 12 days · 5,350 units short" in highlight
+    assert "Sensitivity · 16 days · 7,150 units short" in highlight
+    assert "`notice`" in highlight and "`email`" in highlight
+    [resumed] = collect(flow.resume_case("CASE-1", MARIA))
+    assert resumed.payload["delay_conflict_highlight"] == highlight
     report = approve(flow, events[-1].payload["request"])[-1].payload["report"]
     assert "16-day delay: 7,150 units short." in report
     saved, _ = asyncio.run(flow.case_context("CASE-1"))

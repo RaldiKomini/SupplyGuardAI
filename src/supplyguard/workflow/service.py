@@ -24,6 +24,7 @@ from supplyguard.contracts import (
     UIEvent,
     UIEventType,
 )
+from supplyguard.reporting import delay_conflict_highlight
 from supplyguard.workflow.follow_up import answer_follow_up
 from supplyguard.workflow.graph import build_graph
 from supplyguard.workflow.services import WorkflowServices
@@ -104,8 +105,10 @@ class CaseWorkflow:
         return interrupts[0].value if interrupts else None
 
     @staticmethod
-    def _pause_event(case_id: str, pending: dict) -> UIEvent:
+    def _pause_event(case_id: str, pending: dict, case_state: dict | None = None) -> UIEvent:
         if pending["type"] == "approval":
+            if case_state and (highlight := delay_conflict_highlight(case_state)):
+                pending = {**pending, "delay_conflict_highlight": highlight}
             return _event(
                 case_id,
                 UIEventType.APPROVAL,
@@ -127,7 +130,10 @@ class CaseWorkflow:
             for step, update in chunk.items():
                 if step == "__interrupt__":
                     for pause in update:
-                        yield self._pause_event(case_id, pause.value)
+                        case_state = None
+                        if pause.value["type"] == "approval":
+                            case_state = await self.case_values(case_id)
+                        yield self._pause_event(case_id, pause.value, case_state)
                     continue
                 if step not in STEP_EVENTS or not update:
                     continue
@@ -184,7 +190,7 @@ class CaseWorkflow:
                     if state.values.get(key) is not None
                 }
                 pending = {**pending, **context}
-            yield self._pause_event(case_id, pending)
+            yield self._pause_event(case_id, pending, state.values)
             return
         if state.next:
             async for event in self._run(case_id, None):
