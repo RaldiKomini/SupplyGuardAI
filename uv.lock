@@ -2818,7 +2818,6 @@ dependencies = [
     { name = "langchain-core" },
     { name = "langchain-openai" },
     { name = "langgraph" },
-    { name = "langsmith" },
     { name = "mcp" },
     { name = "neo4j" },
     { name = "numpy" },
