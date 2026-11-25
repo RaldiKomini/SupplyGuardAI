@@ -237,11 +237,7 @@ def test_approval_pause_keeps_the_request_on_the_server(session, sent) -> None:
     asyncio.run(chainlit_app._ask_for_approval(_approval_event()))
 
     assert session.get("pending_approval")["approval_request_id"] == "req-1"
-    assert [action.name for action in sent[0].actions] == [
-        "approve_request",
-        "reject_request",
-        "modify_request",
-    ]
+    assert [action.name for action in sent[0].actions] == ["approve_request", "reject_request"]
     assert all(action.payload == {"approval_request_id": "req-1"} for action in sent[0].actions)
 
 
@@ -339,11 +335,7 @@ def test_review_opens_the_request_with_buttons_for_an_approver(session, monkeypa
 
     asyncio.run(chainlit_app.review_approval(_button("req-1")))
 
-    assert [action.name for action in sent[0].actions] == [
-        "approve_request",
-        "reject_request",
-        "modify_request",
-    ]
+    assert [action.name for action in sent[0].actions] == ["approve_request", "reject_request"]
     assert session.get("pending_approval")["approval_request_id"] == "req-1"
 
 
@@ -411,11 +403,7 @@ def test_latest_waiting_approval_is_shown_again_after_reload(session, monkeypatc
     asyncio.run(chainlit_app._restore_waiting_approval(_authorization()))
 
     assert fake.resumed == ["case-1"]
-    assert [action.name for action in sent[0].actions] == [
-        "approve_request",
-        "reject_request",
-        "modify_request",
-    ]
+    assert [action.name for action in sent[0].actions] == ["approve_request", "reject_request"]
     assert session.get("pending_approval")["approval_request_id"] == "req-1"
     assert session.get("case_id") == "case-1"
 
@@ -483,6 +471,27 @@ def _reply(monkeypatch: pytest.MonkeyPatch, text: str | None) -> None:
     monkeypatch.setattr(chainlit_app.cl, "AskUserMessage", _FakeAsk)
 
 
+def test_editable_request_offers_the_modify_button(session, sent) -> None:
+    asyncio.run(chainlit_app._prompt_approval(_request_with_quantity(), "Approval needed."))
+
+    assert [action.name for action in sent[0].actions] == [
+        "approve_request",
+        "reject_request",
+        "modify_request",
+    ]
+
+
+def test_expedite_quantity_is_fixed_by_the_purchase_order() -> None:
+    request = _request_with_quantity()
+    expedite = request.actions[0]
+    expedite = expedite.model_copy(update={"payload": {**expedite.payload, "qty": 1500}})
+    request = request.model_copy(update={"actions": (expedite, request.actions[1])})
+
+    assert expedite.action_id not in chainlit_app.quantity_question(request)
+    with pytest.raises(ValueError, match="uses the existing purchase order quantity"):
+        chainlit_app.modified_actions(request, f"{expedite.action_id} 1000")
+
+
 def test_modification_changes_only_the_named_quantity() -> None:
     changed = chainlit_app.modified_actions(_request_with_quantity(), "ACT-BUY-S004 2,500")
 
@@ -494,6 +503,9 @@ def test_modification_changes_only_the_named_quantity() -> None:
     "reply, problem",
     [
         ("buy more please", "write the action ID"),
+        ("ACT-BUY-S004 2.5", "whole-unit quantity"),
+        ("ACT-BUY-S004 25,0", "whole-unit quantity"),
+        ("ACT-BUY-S004 2.500", "whole-unit quantity"),
         ("ACT-NOPE 100", "no action ACT-NOPE"),
         ("act-1 100", "has no quantity"),
         ("ACT-BUY-S004 0", "must be positive"),

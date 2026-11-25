@@ -81,15 +81,18 @@ Written by the investigation agent from the case data, with their sources. They 
 - [warning] There is a warning about ambiguous supplier naming: 'Atlas Components' vs 'Atlas Logistik GmbH' - 'Atlas' alone is ambiguous. Also, a superseded contract version (v2 with 10 days lead time) is still in the corpus, while the current contract (v3) specifies 14 days lead time for supplier S001. (components.csv)
 
 ## Options compared
-| Option | Recovery cost | Revenue at risk | Uncovered units | Rejection reasons |
+| Option | Recovery cost | Estimated revenue exposure | Uncovered units | Rejection reasons |
 |---|---|---|---|---|
 | Transfer available inventory | EUR 96 | EUR 37,983,380 | 5,350 | - |
 | Expedite an existing order | EUR 882 | EUR 27,333,835 | 3,850 | - |
 | Purchase from an approved alternative | EUR 29,400 | EUR 16,684,289 | 2,350 | - |
 | Combined: transfer, expedite and purchase | EUR 30,378 | EUR 6,034,743 | 850 | - |
 | Combined plan plus top-up from a warned supplier | EUR 39,218 | EUR 0 | 0 | - |
-| Purchase from S003 | EUR 31,850 | EUR 37,983,380 | 5,350 | certification is expired; a valid certification is required |
-| Purchase from S002 | EUR 10,800 | EUR 37,983,380 | 5,350 | lead time 21 days: arrives on or after day 19, when the delayed delivery arrives |
+| Purchase from S003 | EUR 31,850 (comparison only) | EUR 37,983,380 | 5,350 | certification is expired; a valid certification is required |
+| Purchase from S002 | EUR 10,800 (comparison only) | EUR 37,983,380 | 5,350 | lead time 21 days: arrives on or after day 19, when the delayed delivery arrives |
+
+Revenue estimates prorate the case exposure by uncovered units. Customer due dates and order
+allocation are outside this estimate.
 
 ## Recommendation
 Combined: transfer, expedite and purchase: 30378.00 EUR, 850 units still uncovered, no policy warnings.

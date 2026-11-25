@@ -1,7 +1,10 @@
 """Authoritative arithmetic kept independent from databases and LLMs."""
 
+from collections.abc import Sequence
 from datetime import date, timedelta
 from decimal import ROUND_CEILING, Decimal
+
+from supplyguard.contracts import RecoveryAction, RecoveryActionType
 
 LATE_PENALTY_CAP_PERCENTAGE = Decimal(5)
 
@@ -40,6 +43,17 @@ def shortfall_from_demand(usable_units: int, demand_units: Decimal) -> int:
         raise ValueError("shortfall inputs cannot be negative")
     missing = max(Decimal(0), demand_units - usable_units)
     return int(missing.to_integral_value(rounding=ROUND_CEILING))
+
+
+def uncovered_after_recovery(shortfall_units: int, actions: Sequence[RecoveryAction]) -> int:
+    """Project remaining network shortfall from planned replenishment in the disruption window."""
+    replenishment_units = sum(
+        int(action.payload["qty"])
+        for action in actions
+        if action.action_type
+        in (RecoveryActionType.EXPEDITE_ORDER, RecoveryActionType.PURCHASE_ALTERNATIVE)
+    )
+    return max(0, shortfall_units - replenishment_units)
 
 
 def projected_stockout_date(

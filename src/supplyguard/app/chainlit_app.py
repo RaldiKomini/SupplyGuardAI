@@ -19,6 +19,7 @@ from supplyguard.contracts import (
     CaseStatus,
     IncidentInput,
     RecoveryAction,
+    RecoveryActionType,
     UIEvent,
     UIEventType,
 )
@@ -158,7 +159,13 @@ async def modify_request(action: cl.Action) -> None:
         await cl.Message(STALE_REQUEST_MESSAGE).send()
         return
     request = ApprovalRequest.model_validate(pending)
+    if not any(_editable_quantity(item) for item in request.actions):
+        await cl.Message("This request has no editable quantities.").send()
+        return
     reply = await cl.AskUserMessage(content=quantity_question(request), timeout=300).send()
+    if cl.user_session.get("pending_approval") != pending:
+        await cl.Message(STALE_REQUEST_MESSAGE).send()
+        return
     if not reply:
         await cl.Message("No change was made. The current request still stands.").send()
         return
@@ -305,14 +312,19 @@ def build_decision(
     )
 
 
-_QUANTITY_CHANGE = re.compile(r"^\s*(\S+)\s+(?:qty\s*=?\s*)?(\d[\d,.]*)\s*$", re.IGNORECASE)
+_QUANTITY_CHANGE = re.compile(
+    r"^\s*(\S+)\s+(?:qty\s*=?\s*)?([0-9]+|[0-9]{1,3}(?:,[0-9]{3})+)\s*$", re.IGNORECASE
+)
+
+
+def _editable_quantity(action: RecoveryAction) -> bool:
+    return "qty" in action.payload and action.action_type != RecoveryActionType.EXPEDITE_ORDER
 
 
 def quantity_question(request: ApprovalRequest) -> str:
-    choices = [
-        f"{a.action_id} (now {a.payload['qty']})" for a in request.actions if "qty" in a.payload
-    ]
-    example = request.actions[-1].action_id if request.actions else "ACT-1"
+    editable = [action for action in request.actions if _editable_quantity(action)]
+    choices = [f"{action.action_id} (now {action.payload['qty']})" for action in editable]
+    example = editable[-1].action_id if editable else "ACT-1"
     return (
         "Which quantity should change? Reply with the action ID and the new quantity, "
         f"for example: {example} 2500.\nQuantities you can change: {', '.join(choices)}."
@@ -324,14 +336,18 @@ def modified_actions(request: ApprovalRequest, text: str) -> tuple[RecoveryActio
     Prices and checks are redone by the approval service, never here."""
     match = _QUANTITY_CHANGE.match(text)
     if not match:
-        raise ValueError("write the action ID and the new quantity, for example ACT-BUY-S004 2500")
+        raise ValueError(
+            "write the action ID and a whole-unit quantity, for example ACT-BUY-S004 2500"
+        )
     action_id = match.group(1)
-    quantity = int(match.group(2).replace(",", "").replace(".", ""))
+    quantity = int(match.group(2).replace(",", ""))
     target = next((a for a in request.actions if a.action_id == action_id), None)
     if target is None:
         raise ValueError(f"there is no action {action_id} in this request")
     if "qty" not in target.payload:
         raise ValueError(f"{action_id} has no quantity to change")
+    if not _editable_quantity(target):
+        raise ValueError(f"{action_id} uses the existing purchase order quantity")
     if quantity <= 0:
         raise ValueError("the quantity must be positive")
     if quantity == int(target.payload["qty"]):
@@ -407,14 +423,13 @@ async def _prompt_approval(request: ApprovalRequest, intro: str) -> None:
         return
     cl.user_session.set("pending_approval", request.model_dump(mode="json"))
     payload = {"approval_request_id": request.approval_request_id}
-    await cl.Message(
-        content=summary,
-        actions=[
-            cl.Action(name="approve_request", payload=payload, label="Approve"),
-            cl.Action(name="reject_request", payload=payload, label="Reject"),
-            cl.Action(name="modify_request", payload=payload, label="Modify quantity"),
-        ],
-    ).send()
+    actions = [
+        cl.Action(name="approve_request", payload=payload, label="Approve"),
+        cl.Action(name="reject_request", payload=payload, label="Reject"),
+    ]
+    if any(_editable_quantity(action) for action in request.actions):
+        actions.append(cl.Action(name="modify_request", payload=payload, label="Modify quantity"))
+    await cl.Message(content=summary, actions=actions).send()
 
 
 async def _restore_waiting_approval(authorization: AuthorizationContext) -> None:

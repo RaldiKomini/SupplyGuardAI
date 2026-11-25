@@ -7,6 +7,7 @@ report is one the workflow received from the owning component.
 from collections.abc import Sequence
 from decimal import Decimal
 
+from supplyguard.calculations import uncovered_after_recovery
 from supplyguard.contracts import (
     ApprovalDecision,
     ApprovalRequest,
@@ -81,6 +82,7 @@ def late_penalty_summary(impact: ImpactReport) -> str | None:
 
 def build_incident_report(state: dict) -> str:
     incident, intelligence, evidence, plan, request, decision, results = _load(state)
+    revised = request is not None and request.payload_version > 1
     out = [f"# Incident report: case {state['case_id']}", ""]
 
     completed = completed_action_count(results)
@@ -220,16 +222,29 @@ def build_incident_report(state: dict) -> str:
         name = recommended.name if recommended else "No feasible option"
         reason = plan.recommendation_reason.removeprefix(f"{name}: ")
         out += [
-            "## Options compared",
+            "## Original options compared" if revised else "## Options compared",
             *rows,
             "",
             "Revenue estimates prorate the case exposure by uncovered units. "
             "Customer due dates and order allocation are outside this estimate.",
             "",
-            "## Recommendation",
-            f"{name}: {reason}",
-            "",
         ]
+        if not revised:
+            out += ["## Recommendation", f"{name}: {reason}", ""]
+
+    if request is not None and revised:
+        out += [
+            "## Revised recommendation",
+            f"Approval v{request.payload_version} totals {_eur(request.total_cost_eur)}.",
+        ]
+        if intelligence is None:
+            out.append("Revised coverage estimate unavailable because baseline impact is missing.")
+        else:
+            uncovered = uncovered_after_recovery(
+                intelligence.impact.projected_shortfall_units, request.actions
+            )
+            out.append(f"An estimated {uncovered:,} units remain uncovered if all actions succeed.")
+        out.append("")
 
     approval = []
     if request:
@@ -263,7 +278,7 @@ def build_incident_report(state: dict) -> str:
         "",
     ]
 
-    risks = list(plan.residual_risks) if plan else []
+    risks = list(plan.residual_risks) if plan and not revised else []
     if intelligence:
         risks += [w.message for w in intelligence.warnings if w.severity != Severity.BLOCKING]
     risks += state.get("errors") or []
