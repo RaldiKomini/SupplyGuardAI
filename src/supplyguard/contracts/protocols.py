@@ -132,6 +132,12 @@ class ApprovalService(Protocol):
     ) -> ApprovalRequest: ...
 
 
+class ApprovalRequestSource(Protocol):
+    """Read-only lookup of an approval request by id; returns None when it does not exist."""
+
+    async def get_request(self, approval_request_id: str) -> ApprovalRequest | None: ...
+
+
 class ProcurementExecutionService(Protocol):
     async def execute(
         self, request: ApprovalRequest, decision: ApprovalDecision

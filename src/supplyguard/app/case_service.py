@@ -10,11 +10,10 @@ decision on it, and nothing else about the case.
 """
 
 from collections.abc import AsyncIterator
-from typing import Protocol
 
 from supplyguard.contracts import AuthorizationContext, CaseSummary, IncidentInput, UIEvent
 from supplyguard.contracts.planning import ApprovalDecision, ApprovalRequest
-from supplyguard.contracts.protocols import CaseWorkflowService
+from supplyguard.contracts.protocols import ApprovalRequestSource, CaseWorkflowService
 
 
 class CaseNotFoundError(LookupError):
@@ -23,10 +22,6 @@ class CaseNotFoundError(LookupError):
 
 class RequestRejectedError(ValueError):
     """Raised when a request does not match the authenticated user."""
-
-
-class ApprovalRequestSource(Protocol):
-    async def get_request(self, approval_request_id: str) -> ApprovalRequest | None: ...
 
 
 class CaseService:
