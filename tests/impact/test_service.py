@@ -1,4 +1,5 @@
-from datetime import date
+from dataclasses import replace
+from datetime import date, timedelta
 from decimal import Decimal
 
 import pytest
@@ -8,10 +9,10 @@ from supplyguard.graph.client import DependencyContext
 from supplyguard.impact.service import DefaultOperationalIntelligenceService
 from supplyguard.repositories.operational import (
     CapabilityRow,
-    FactoryDemandRow,
     InventoryRow,
     OpenPurchaseOrderRow,
     OrderRow,
+    WeeklyDemandRow,
 )
 
 
@@ -24,11 +25,11 @@ class FakeRepository:
     async def affected_product_ids(self, component_id):
         return ("P-1",)
 
-    async def average_daily_component_demand(self, component_id, start_date):
-        return Decimal(450)
-
-    async def daily_demand_by_factory(self, component_id, start_date):
-        return (FactoryDemandRow("FAC-1", Decimal(450)),)
+    async def weekly_component_demand(self, component_id, start_date, end_date):
+        return tuple(
+            WeeklyDemandRow("FAC-1", start_date + timedelta(days=offset), 3150)
+            for offset in range(0, (end_date - start_date).days, 7)
+        )
 
     async def open_orders(self, product_ids, scenario_date):
         return (OrderRow("O-1", "C-1", "P-1", date(2025, 1, 10), 10, 1, Decimal("2500")),)
@@ -48,16 +49,25 @@ class FakeRepository:
                 component_id,
                 1500,
                 Decimal("9.8"),
-                date(2026, 11, 2),
+                date(2025, 1, 15),
                 "open",
                 True,
                 Decimal("6"),
                 7,
             ),
+            OpenPurchaseOrderRow(
+                "PO-2026-9001",
+                "SUP-1",
+                component_id,
+                6000,
+                Decimal("8.50"),
+                date(2025, 1, 8),
+                "open",
+                False,
+                Decimal(0),
+                0,
+            ),
         )
-
-    async def days_until_next_delivery(self, supplier_id, component_id, scenario_date):
-        return 7
 
     async def quality_warnings(self, record_ids):
         return ()
@@ -83,10 +93,9 @@ class FakeRisk:
         return (), ()
 
 
-@pytest.mark.asyncio
-async def test_investigation_builds_traceable_golden_result() -> None:
-    service = DefaultOperationalIntelligenceService(FakeRepository(), FakeGraph(), FakeRisk())
-    incident = ConfirmedIncident(
+@pytest.fixture
+def atlas_incident() -> ConfirmedIncident:
+    return ConfirmedIncident(
         case_id="CASE-1",
         user_id="U-1",
         supplier_id="SUP-1",
@@ -97,16 +106,103 @@ async def test_investigation_builds_traceable_golden_result() -> None:
         original_message="Atlas says MC-17 is delayed by 12 days.",
     )
 
-    result = await service.investigate(incident)
+
+@pytest.mark.asyncio
+async def test_investigation_builds_traceable_golden_result(atlas_incident) -> None:
+    service = DefaultOperationalIntelligenceService(FakeRepository(), FakeGraph(), FakeRisk())
+    result = await service.investigate(atlas_incident)
 
     assert result.impact.total_usable_units == 3200
     assert result.impact.projected_shortfall_units == 5350
     assert result.impact.revenue_at_risk_eur == Decimal("2500")
     assert result.impact.calculations[0].inputs["delay_days"] == 12
+    assert result.impact.calculations[0].sources[-1].record_id == "PO-2026-9001"
     assert result.impact.open_purchase_orders[0].po_id == "PO-2026-9002"
     assert result.impact.calculations[1].result == Decimal("882.00")
     assert result.dependencies.disconnected_entity_ids == ("P-99",)
     assert result.warnings == ()
+
+
+@pytest.mark.asyncio
+async def test_demand_only_counts_days_overlapping_the_arrival_window(atlas_incident) -> None:
+    class UnevenSchedule(FakeRepository):
+        async def weekly_component_demand(self, component_id, start_date, end_date):
+            assert end_date == start_date + timedelta(days=19)
+            return (
+                WeeklyDemandRow("FAC-1", start_date, 2100),
+                WeeklyDemandRow("FAC-1", start_date + timedelta(days=7), 3500),
+                WeeklyDemandRow("FAC-1", start_date + timedelta(days=14), 4200),
+                WeeklyDemandRow("FAC-1", start_date + timedelta(days=21), 99999),
+            )
+
+    result = await DefaultOperationalIntelligenceService(
+        UnevenSchedule(), FakeGraph(), FakeRisk()
+    ).investigate(atlas_incident)
+
+    # Two full weeks plus five days of the third week.
+    assert result.impact.calculations[0].inputs["demand_before_arrival"] == 8600
+    assert result.impact.projected_shortfall_units == 5400
+    assert result.impact.coverage[0].daily_demand_units == Decimal(8600) / 19
+
+
+@pytest.mark.asyncio
+async def test_stock_mismatch_keeps_verified_locations_and_warns(atlas_incident) -> None:
+    class InconsistentStock(FakeRepository):
+        async def inventory_for_component(self, component_id):
+            return (
+                InventoryRow(component_id, "W-STU", "FAC-1", 2600, 0, 0, 2600, None),
+                InventoryRow(component_id, "W-KAT", "FAC-2", 1500, 300, 600, 700, None),
+            )
+
+    result = await DefaultOperationalIntelligenceService(
+        InconsistentStock(), FakeGraph(), FakeRisk()
+    ).investigate(atlas_incident)
+
+    assert result.impact.total_usable_units == 2600
+    assert [position.location_id for position in result.impact.inventory] == ["W-STU"]
+    assert [position.location_id for position in result.impact.coverage] == ["W-STU"]
+    assert result.impact.first_stockout_date is None
+    assert result.impact.projected_shortfall_units == 5950
+    warning = next(w for w in result.warnings if w.issue_type == "inventory_total_unconfirmed")
+    assert warning.record_id == "MC-17|W-KAT"
+    assert warning.sources[0].source_id == "inventory.csv"
+
+
+@pytest.mark.asyncio
+async def test_named_pending_order_takes_priority_over_earliest(atlas_incident) -> None:
+    class TwoAtlasOrders(FakeRepository):
+        async def open_purchase_orders(self, component_id):
+            orders = await super().open_purchase_orders(component_id)
+            later_order = replace(orders[1], po_id="PO-2026-9010", promised_date=date(2025, 1, 10))
+            return (*orders, later_order)
+
+    incident = atlas_incident.model_copy(
+        update={"original_message": "Atlas says po-2026-9010 is 12 days late."}
+    )
+    result = await DefaultOperationalIntelligenceService(
+        TwoAtlasOrders(), FakeGraph(), FakeRisk()
+    ).investigate(incident)
+
+    trace = result.impact.calculations[0]
+    assert trace.sources[-1].record_id == "PO-2026-9010"
+    assert trace.inputs["window_days"] == 21
+    assert result.impact.projected_shortfall_units == 6250
+
+
+@pytest.mark.asyncio
+async def test_named_order_for_other_supplier_does_not_silently_use_earliest(
+    atlas_incident,
+) -> None:
+    incident = atlas_incident.model_copy(
+        update={"original_message": "Atlas says PO-2026-9002 is 12 days late."}
+    )
+    result = await DefaultOperationalIntelligenceService(
+        FakeRepository(), FakeGraph(), FakeRisk()
+    ).investigate(incident)
+
+    assert result.impact.calculations[0].inputs["window_days"] == 12
+    warning = next(w for w in result.warnings if w.issue_type == "delayed_order_unconfirmed")
+    assert warning.record_id == "PO-2026-9002"
 
 
 @pytest.mark.asyncio
