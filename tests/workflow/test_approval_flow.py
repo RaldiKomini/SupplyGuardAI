@@ -85,7 +85,8 @@ def test_approval_executes_once_and_completes(scripted_model, make_services) -> 
     assert result["status"] == "completed"
     assert len(services.execution.writes) == 1
     assert len(services.approval.recorded) == 1
-    assert "carried out" in result["messages"][-1].content
+    assert "carried out" in result["messages"][-2].content
+    assert result["report"].startswith("# Incident report: case CASE-1")
 
 
 def test_rejection_executes_nothing(scripted_model, make_services) -> None:
@@ -98,7 +99,7 @@ def test_rejection_executes_nothing(scripted_model, make_services) -> None:
 
     assert result["status"] == "completed"
     assert services.execution.writes == []
-    assert "rejected" in result["messages"][-1].content
+    assert "rejected" in result["messages"][-2].content
 
 
 def test_modification_needs_a_new_approval(scripted_model, make_services) -> None:
