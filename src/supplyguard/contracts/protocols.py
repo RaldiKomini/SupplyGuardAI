@@ -132,6 +132,21 @@ class ApprovalService(Protocol):
     ) -> ApprovalRequest: ...
 
 
+class ApprovalRequestSource(Protocol):
+    """Read-only approval lookups used by CaseService.
+
+    get_request returns None when the id does not exist. list_open_for returns the latest
+    versions still waiting on the role that this user has not decided yet. has_decided
+    tells whether this user has already recorded a decision on the request.
+    """
+
+    async def get_request(self, approval_request_id: str) -> ApprovalRequest | None: ...
+
+    async def list_open_for(self, role: str, user_id: str) -> tuple[ApprovalRequest, ...]: ...
+
+    async def has_decided(self, approval_request_id: str, user_id: str) -> bool: ...
+
+
 class ProcurementExecutionService(Protocol):
     async def execute(
         self, request: ApprovalRequest, decision: ApprovalDecision
