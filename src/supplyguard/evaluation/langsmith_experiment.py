@@ -19,6 +19,7 @@ from collections.abc import Awaitable, Callable, Mapping, Sequence
 from typing import Any
 
 from langsmith import Client, aevaluate
+from langsmith.schemas import Example
 
 from supplyguard.contracts.events import EvaluationResult, EvaluationStatus
 from supplyguard.evaluation.cases import EvaluationCase, load_cases, require_full_suite
@@ -28,6 +29,7 @@ from supplyguard.evaluation.runner import EvaluationRunner
 DATASET_NAME = "supplyguard-eval-105"
 DATASET_DESCRIPTION = "SupplyGuard AI held-out evaluation suite (105 synthetic cases)."
 DEFAULT_EXPERIMENT_PREFIX = "supplyguard-eval"
+DEFAULT_RISK_MCP_URL = "http://127.0.0.1:8101/mcp"
 
 Target = Callable[[dict[str, Any]], Awaitable[dict[str, Any]]]
 
@@ -42,34 +44,60 @@ def example_rows(cases: Sequence[EvaluationCase]) -> list[dict[str, Any]]:
                 "message": case.message,
                 "depends_on": case.depends_on,
             },
-            "outputs": {"expected": case.expected},
+            "reference_outputs": {"expected": case.expected},
             "metadata": {"category": case.category.value},
         }
         for case in cases
     ]
 
 
-def sync_dataset(client: Client, cases: Sequence[EvaluationCase], name: str = DATASET_NAME):
-    """Create the dataset on first use; afterwards add only the cases it does not have yet."""
+def _dataset_examples(
+    examples: Sequence[Example], rows: dict[str, dict[str, Any]], name: str
+) -> dict[str, Example]:
+    by_id: dict[str, Example] = {}
+    for example in examples:
+        inputs = example.inputs or {}
+        case_id = inputs.get("case_id")
+        row = rows.get(case_id) if isinstance(case_id, str) else None
+        if (
+            row is None
+            or case_id in by_id
+            or inputs != row["inputs"]
+            or example.outputs != row["reference_outputs"]
+        ):
+            raise ValueError(
+                f"LangSmith dataset {name!r} contains an unexpected, duplicate or changed example. "
+                "Use --dataset with a new name for a revised suite."
+            )
+        by_id[case_id] = example
+    return by_id
+
+
+def sync_dataset(
+    client: Client, cases: Sequence[EvaluationCase], name: str = DATASET_NAME
+) -> tuple[Example, ...]:
+    """Read the exact suite version and add only its missing cases."""
+    rows = {row["inputs"]["case_id"]: row for row in example_rows(cases)}
     if client.has_dataset(dataset_name=name):
         dataset = client.read_dataset(dataset_name=name)
-        present = {
-            example.inputs["case_id"] for example in client.list_examples(dataset_id=dataset.id)
-        }
+        present = _dataset_examples(list(client.list_examples(dataset_id=dataset.id)), rows, name)
     else:
         dataset = client.create_dataset(name, description=DATASET_DESCRIPTION)
-        present = set()
-    missing = [row for row in example_rows(cases) if row["inputs"]["case_id"] not in present]
+        present = {}
+    missing = [row for case_id, row in rows.items() if case_id not in present]
     if missing:
         client.create_examples(dataset_id=dataset.id, examples=missing)
-    return dataset
+        present = _dataset_examples(list(client.list_examples(dataset_id=dataset.id)), rows, name)
+    if len(present) != len(rows):
+        raise RuntimeError(f"LangSmith dataset {name!r} is missing cases after synchronization.")
+    return tuple(present[case_id] for case_id in rows)
 
 
 def result_outputs(result: EvaluationResult) -> dict[str, Any]:
+    # Findings can include exception details or evidence text. Keep them in the local report.
     return {
         "status": result.status.value,
         "metrics": dict(result.metrics),
-        "findings": list(result.findings),
     }
 
 
@@ -118,11 +146,11 @@ async def run_experiment(
     experiment_prefix: str = DEFAULT_EXPERIMENT_PREFIX,
     dataset_name: str = DATASET_NAME,
 ) -> tuple[Any, tuple[EvaluationResult, ...]]:
-    sync_dataset(client, cases, dataset_name)
+    examples = sync_dataset(client, cases, dataset_name)
     collected: dict[str, EvaluationResult] = {}
     experiment = await aevaluate(
         make_target(runner, cases, collected),
-        data=dataset_name,
+        data=examples,
         evaluators=[passed, not_runnable],
         experiment_prefix=experiment_prefix,
         description="SupplyGuard AI evaluation harness on the 105-case suite.",
@@ -134,7 +162,7 @@ async def run_experiment(
     return experiment, ordered
 
 
-async def _main(experiment_prefix: str) -> int:
+async def _main(experiment_prefix: str, dataset_name: str) -> int:
     from supplyguard.approval.policy import load_approval_policy
     from supplyguard.calculations.service import DeterministicCostService
     from supplyguard.data.database import Database
@@ -157,7 +185,9 @@ async def _main(experiment_prefix: str) -> int:
         intelligence = ConnectionPerCallIntelligence(
             database,
             graph,
-            ExternalRiskService(McpRiskClient(os.environ["EXTERNAL_RISK_MCP_URL"])),
+            ExternalRiskService(
+                McpRiskClient(os.getenv("EXTERNAL_RISK_MCP_URL") or DEFAULT_RISK_MCP_URL)
+            ),
             DeterministicCostService(),
         )
         runner = EvaluationRunner(
@@ -169,27 +199,29 @@ async def _main(experiment_prefix: str) -> int:
             )
         )
         experiment, results = await run_experiment(
-            Client(), runner, cases, experiment_prefix=experiment_prefix
+            Client(), runner, cases, experiment_prefix=experiment_prefix, dataset_name=dataset_name
         )
     finally:
         await graph.close()
         await database.close()
 
-    print(render_markdown(build_report(cases, results)))
+    report = build_report(cases, results)
+    print(render_markdown(report))
     for line in first_errors(results):
         print(line)
     print(f"\nLangSmith experiment: {experiment.experiment_name}")
-    return 0
+    return int(bool(report.missing_case_ids))
 
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="Run the evaluation suite in LangSmith")
     parser.add_argument("--prefix", default=DEFAULT_EXPERIMENT_PREFIX)
+    parser.add_argument("--dataset", default=DATASET_NAME)
     arguments = parser.parse_args()
     if not os.getenv("LANGSMITH_API_KEY"):
         sys.exit("LANGSMITH_API_KEY is not set. Add it to .env and use: uv run --env-file .env")
     loop_factory = asyncio.SelectorEventLoop if sys.platform == "win32" else None
-    sys.exit(asyncio.run(_main(arguments.prefix), loop_factory=loop_factory))
+    sys.exit(asyncio.run(_main(arguments.prefix, arguments.dataset), loop_factory=loop_factory))
 
 
 if __name__ == "__main__":

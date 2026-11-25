@@ -45,7 +45,9 @@ docker compose --env-file .env up -d --wait postgres neo4j
 uv run --env-file .env python -m supplyguard.evaluation.langsmith_experiment
 ```
 
-Each case is scored `passed` and `not_runnable`, so cases whose component is not wired yet stay visible instead of being skipped. The command prints the per-category table and the experiment name to compare in LangSmith. Load the support data first (see the operational-intelligence guide); on an empty database every impact case fails.
+Each case is scored `passed` and `not_runnable`, so cases whose component is unavailable or errors stay visible. The command prints the per-category table and the experiment name. LangSmith receives synthetic examples, verdicts and numeric metrics. Diagnostic findings stay local. Load the support data first (see the operational-intelligence guide); on an empty database every impact case fails.
+
+The runner checks that the dataset examples match the local suite before scoring. Use `--dataset supplyguard-eval-105-v2` for a revised suite so earlier experiments keep their original reference answers.
 
 Result on 25 November 2026 (experiment `supplyguard-eval-1d7d6c53`):
 

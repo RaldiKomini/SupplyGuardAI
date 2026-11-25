@@ -2,9 +2,11 @@
 
 from types import SimpleNamespace
 from unittest.mock import MagicMock
+from uuid import uuid4
 
 import pytest
 from langsmith import Client
+from langsmith.schemas import Example, ExampleCreate
 
 from supplyguard.contracts.events import EvaluationResult, EvaluationStatus
 from supplyguard.evaluation import langsmith_experiment as experiment
@@ -44,6 +46,21 @@ def runner() -> EvaluationRunner:
 
 
 CASES = (case("EV-1"), case("EV-2", EvaluationCategory.AMBIGUITY), case("EV-3"))
+DATASET_ID = uuid4()
+
+
+def remote_examples(cases=CASES) -> list[Example]:
+    return [
+        Example(
+            id=uuid4(),
+            dataset_id=DATASET_ID,
+            inputs=row.inputs,
+            outputs=row.reference_outputs,
+            metadata=row.metadata,
+            created_at=row.created_at,
+        )
+        for row in (ExampleCreate(**data) for data in experiment.example_rows(cases))
+    ]
 
 
 async def test_every_case_becomes_one_example_with_its_expectation() -> None:
@@ -51,33 +68,33 @@ async def test_every_case_becomes_one_example_with_its_expectation() -> None:
 
     assert [row["inputs"]["case_id"] for row in rows] == ["EV-1", "EV-2", "EV-3"]
     assert rows[1]["inputs"]["category"] == "ambiguity"
-    assert rows[0]["outputs"] == {"expected": {"x": 1}}
+    assert rows[0]["reference_outputs"] == {"expected": {"x": 1}}
     assert rows[1]["metadata"] == {"category": "ambiguity"}
 
 
 async def test_a_new_dataset_gets_every_case() -> None:
     client = MagicMock(spec=Client)
     client.has_dataset.return_value = False
-    client.create_dataset.return_value = SimpleNamespace(id="ds-1")
+    client.create_dataset.return_value = SimpleNamespace(id=DATASET_ID)
+    stored = remote_examples()
+    client.list_examples.return_value = stored
 
-    experiment.sync_dataset(client, CASES)
+    assert experiment.sync_dataset(client, CASES) == tuple(stored)
 
     client.create_dataset.assert_called_once()
     examples = client.create_examples.call_args.kwargs["examples"]
-    assert client.create_examples.call_args.kwargs["dataset_id"] == "ds-1"
+    assert client.create_examples.call_args.kwargs["dataset_id"] == DATASET_ID
     assert len(examples) == 3
 
 
 async def test_an_existing_dataset_only_gets_missing_cases() -> None:
     client = MagicMock(spec=Client)
     client.has_dataset.return_value = True
-    client.read_dataset.return_value = SimpleNamespace(id="ds-1")
-    client.list_examples.return_value = [
-        SimpleNamespace(inputs={"case_id": "EV-1"}),
-        SimpleNamespace(inputs={"case_id": "EV-2"}),
-    ]
+    client.read_dataset.return_value = SimpleNamespace(id=DATASET_ID)
+    stored = remote_examples()
+    client.list_examples.side_effect = [stored[:2], stored]
 
-    experiment.sync_dataset(client, CASES)
+    assert experiment.sync_dataset(client, CASES) == tuple(stored)
 
     client.create_dataset.assert_not_called()
     examples = client.create_examples.call_args.kwargs["examples"]
@@ -87,10 +104,30 @@ async def test_an_existing_dataset_only_gets_missing_cases() -> None:
 async def test_a_complete_dataset_is_left_unchanged() -> None:
     client = MagicMock(spec=Client)
     client.has_dataset.return_value = True
-    client.read_dataset.return_value = SimpleNamespace(id="ds-1")
-    client.list_examples.return_value = [SimpleNamespace(inputs={"case_id": c.id}) for c in CASES]
+    client.read_dataset.return_value = SimpleNamespace(id=DATASET_ID)
+    stored = remote_examples()
+    client.list_examples.return_value = list(reversed(stored))
 
-    experiment.sync_dataset(client, CASES)
+    assert experiment.sync_dataset(client, CASES) == tuple(stored)
+
+    client.create_examples.assert_not_called()
+
+
+@pytest.mark.parametrize("drift", ["duplicate", "unknown", "changed_reference"])
+async def test_dataset_drift_requires_a_new_suite_name(drift) -> None:
+    client = MagicMock(spec=Client)
+    client.has_dataset.return_value = True
+    client.read_dataset.return_value = SimpleNamespace(id=DATASET_ID)
+    stored = remote_examples()
+    extra = {
+        "duplicate": stored[0],
+        "unknown": remote_examples((case("EV-99"),))[0],
+        "changed_reference": stored[2].model_copy(update={"outputs": {"expected": {"x": 2}}}),
+    }
+    client.list_examples.return_value = [*stored[:2], extra[drift]]
+
+    with pytest.raises(ValueError, match="--dataset"):
+        experiment.sync_dataset(client, CASES)
 
     client.create_examples.assert_not_called()
 
@@ -100,7 +137,7 @@ async def test_the_target_runs_the_case_through_the_harness() -> None:
 
     outputs = await target({"case_id": "EV-2"})
 
-    assert outputs == {"status": "failed", "metrics": {"score": 1.0}, "findings": ["checked"]}
+    assert outputs == {"status": "failed", "metrics": {"score": 1.0}}
 
 
 async def test_scores_keep_failures_and_unrunnable_cases_visible() -> None:
@@ -117,8 +154,8 @@ async def test_the_experiment_reports_the_same_verdicts_as_the_harness(monkeypat
     async def fake_aevaluate(target, *, data, evaluators, **kwargs):
         calls.update(data=data, kwargs=kwargs)
         scores = []
-        for row in experiment.example_rows(CASES):
-            outputs = await target(row["inputs"])
+        for example in data:
+            outputs = await target(example.inputs)
             scores.append([evaluate(outputs) for evaluate in evaluators])
         calls["scores"] = scores
         return SimpleNamespace(experiment_name="supplyguard-eval-1")
@@ -126,12 +163,14 @@ async def test_the_experiment_reports_the_same_verdicts_as_the_harness(monkeypat
     monkeypatch.setattr(experiment, "aevaluate", fake_aevaluate)
     client = MagicMock(spec=Client)
     client.has_dataset.return_value = False
-    client.create_dataset.return_value = SimpleNamespace(id="ds-1")
+    client.create_dataset.return_value = SimpleNamespace(id=DATASET_ID)
+    stored = remote_examples()
+    client.list_examples.return_value = stored
 
     result, results = await experiment.run_experiment(client, runner(), CASES)
 
     assert result.experiment_name == "supplyguard-eval-1"
-    assert calls["data"] == experiment.DATASET_NAME
+    assert calls["data"] == tuple(stored)
     assert calls["kwargs"]["client"] is client
     assert [r.evaluation_case_id for r in results] == ["EV-1", "EV-2", "EV-3"]
     assert [r.status for r in results] == [
