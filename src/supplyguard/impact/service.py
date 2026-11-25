@@ -24,6 +24,7 @@ from supplyguard.contracts import (
     DependencyReport,
     ImpactReport,
     InventoryPosition,
+    LatePenaltyCostInput,
     OpenPurchaseOrder,
     OperationalIntelligenceResult,
     Severity,
@@ -282,6 +283,21 @@ class DefaultOperationalIntelligenceService:
             for purchase_order in open_purchase_orders
             if purchase_order.expedite_allowed
         )
+        penalty_calculations = tuple(
+            self.cost_service.estimate_late_penalty(
+                LatePenaltyCostInput(
+                    revenue_eur=row.revenue_eur,
+                    delay_days=(delayed_arrival - row.due_date).days,
+                    weekly_rate_percentage=row.weekly_late_penalty_percentage,
+                    sources=(csv_source("customer_orders.csv", row.order_id),),
+                )
+            )
+            for row in {item.order_id: item for item in orders}.values()
+            if delayed_order
+            and row.priority_tier == 1
+            and row.due_date < delayed_arrival
+            and row.weekly_late_penalty_percentage > 0
+        )
         calculations = (
             CalculationTrace(
                 calculation="projected_shortfall",
@@ -307,6 +323,7 @@ class DefaultOperationalIntelligenceService:
                 ),
             ),
             *expedite_calculations,
+            *penalty_calculations,
         )
         impact = ImpactReport(
             case_id=incident.case_id,

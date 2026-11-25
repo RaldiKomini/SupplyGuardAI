@@ -162,66 +162,94 @@ async def run_experiment(
     return experiment, ordered
 
 
-async def _main(experiment_prefix: str, dataset_name: str) -> int:
+EVIDENCE_ROLES = {"procurement_manager": "u-pm-01", "finance_controller": "u-fc-01"}
+
+
+def approver_contexts(registry) -> dict[str, Any]:
+    """The application layer's context for one demo user per role, so scopes come from
+    config/access.toml and are never invented here."""
+    contexts = {}
+    for role, user_id in EVIDENCE_ROLES.items():
+        context = registry.authorization_for(user_id)
+        if context is not None and context.role == role:
+            contexts[role] = context
+    return contexts
+
+
+async def _main(experiment_prefix: str, dataset_name: str, *, local: bool = False) -> int:
     from supplyguard.approval.policy import load_approval_policy
-    from supplyguard.calculations.service import DeterministicCostService
-    from supplyguard.data.database import Database
+    from supplyguard.auth import get_registry
+    from supplyguard.evaluation.cases import EvaluationCategory
     from supplyguard.evaluation.evaluators import default_evaluators, load_golden_figures
-    from supplyguard.external_risk.mcp_client import McpRiskClient
-    from supplyguard.external_risk.service import ExternalRiskService
-    from supplyguard.graph.client import DependencyGraph
-    from supplyguard.retrieval.adapters import GuardrailContentSafetyService
-    from supplyguard.workflow.runtime import ConnectionPerCallIntelligence
+    from supplyguard.workflow.evaluation import WorkflowPolicyEvaluator
+    from supplyguard.workflow.runtime import open_workflow_parts
     from supplyguard.workflow.settings import DATA_DIR
 
     cases = load_cases(DATA_DIR / "evaluation" / "eval_cases.jsonl").cases
     require_full_suite(cases)
+    contexts = approver_contexts(get_registry())
+    owner = contexts.get("procurement_manager")
+    if owner is None or "finance_controller" not in contexts:
+        raise ValueError("The workflow evaluations require both demo approvers.")
 
-    database = Database(os.environ["DATABASE_URL"])
-    graph = DependencyGraph.connect(
-        os.environ["NEO4J_URI"], os.environ["NEO4J_USER"], os.environ["NEO4J_PASSWORD"]
-    )
-    try:
-        intelligence = ConnectionPerCallIntelligence(
-            database,
-            graph,
-            ExternalRiskService(
-                McpRiskClient(os.getenv("EXTERNAL_RISK_MCP_URL") or DEFAULT_RISK_MCP_URL)
-            ),
-            DeterministicCostService(),
+    if local:
+        os.environ["LANGSMITH_TRACING"] = "false"
+    experiment = None
+    async with open_workflow_parts() as parts:
+        evaluators = default_evaluators(
+            parts.services.intelligence,
+            parts.services.content_safety,
+            load_golden_figures(DATA_DIR / "evaluation" / "golden_scenario.json"),
+            load_approval_policy(DATA_DIR / "config" / "policies.json"),
+            evidence=parts.services.evidence,
+            authorizations=contexts,
         )
-        runner = EvaluationRunner(
-            default_evaluators(
-                intelligence,
-                GuardrailContentSafetyService(),
-                load_golden_figures(DATA_DIR / "evaluation" / "golden_scenario.json"),
-                load_approval_policy(DATA_DIR / "config" / "policies.json"),
+        evaluators.update(parts.evaluators(owner, tuple(contexts.values())))
+        policy = EvaluationCategory.POLICY_AND_AUTHORIZATION
+        evaluators[policy] = WorkflowPolicyEvaluator(
+            parts.evaluation_workflows(), owner, evaluators[policy]
+        )
+        runner = EvaluationRunner(evaluators)
+        if local:
+            results = await runner.run(cases)
+        else:
+            experiment, results = await run_experiment(
+                Client(),
+                runner,
+                cases,
+                experiment_prefix=experiment_prefix,
+                dataset_name=dataset_name,
             )
-        )
-        experiment, results = await run_experiment(
-            Client(), runner, cases, experiment_prefix=experiment_prefix, dataset_name=dataset_name
-        )
-    finally:
-        await graph.close()
-        await database.close()
 
     report = build_report(cases, results)
     print(render_markdown(report))
     for line in first_errors(results):
         print(line)
-    print(f"\nLangSmith experiment: {experiment.experiment_name}")
-    return int(bool(report.missing_case_ids))
+    for result in results:
+        if result.status is EvaluationStatus.FAILED:
+            print(f"{result.evaluation_case_id}: {' | '.join(result.findings)}")
+    if experiment is not None:
+        print(f"\nLangSmith experiment: {experiment.experiment_name}")
+    return int(not report.overall_passed)
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Run the evaluation suite in LangSmith")
+    parser = argparse.ArgumentParser(description="Run the evaluation suite")
     parser.add_argument("--prefix", default=DEFAULT_EXPERIMENT_PREFIX)
     parser.add_argument("--dataset", default=DATASET_NAME)
+    parser.add_argument(
+        "--local", action="store_true", help="Evaluate without uploading to LangSmith"
+    )
     arguments = parser.parse_args()
-    if not os.getenv("LANGSMITH_API_KEY"):
+    if not arguments.local and not os.getenv("LANGSMITH_API_KEY"):
         sys.exit("LANGSMITH_API_KEY is not set. Add it to .env and use: uv run --env-file .env")
     loop_factory = asyncio.SelectorEventLoop if sys.platform == "win32" else None
-    sys.exit(asyncio.run(_main(arguments.prefix, arguments.dataset), loop_factory=loop_factory))
+    sys.exit(
+        asyncio.run(
+            _main(arguments.prefix, arguments.dataset, local=arguments.local),
+            loop_factory=loop_factory,
+        )
+    )
 
 
 if __name__ == "__main__":

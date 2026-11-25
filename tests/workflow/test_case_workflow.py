@@ -2,17 +2,23 @@
 
 import asyncio
 from datetime import UTC, datetime
+from decimal import Decimal
 
 import pytest
-from conftest import FakeExecution, FakePlanning
+from conftest import FakeEvidence, FakeExecution, FakeIntelligence, FakePlanning
 from langgraph.checkpoint.memory import InMemorySaver
 from langgraph.types import Command
 
 from supplyguard.contracts import (
     ApprovalDecision,
     AuthorizationContext,
+    CalculationTrace,
+    EvidenceBundle,
+    EvidenceConflict,
+    EvidenceItem,
     ExecutionStatus,
     IncidentInput,
+    SourceReference,
     UIEventType,
 )
 from supplyguard.workflow.follow_up import FollowUpIntent
@@ -275,6 +281,95 @@ def test_injection_pasted_into_the_message_is_flagged_and_reported(scripted_mode
     assert events[-1].event_type is UIEventType.APPROVAL  # the case itself continues safely
     report_events = approve(flow, events[-1].payload["request"])
     assert "prompt_injection" in report_events[-1].payload["report"]
+
+
+def test_notice_drives_the_plan_and_email_is_a_sensitivity(scripted_model, make_services):
+    class ConflictingDelay(FakeEvidence):
+        async def retrieve(self, incident, authorization):
+            notice = EvidenceItem(
+                evidence_id="notice",
+                title="Atlas notice",
+                document_type="supplier_notice",
+                content="MC-17 has a 12-day delay.",
+                source=SourceReference(source_id="notice", source_type="supplier_notice"),
+            )
+            return EvidenceBundle(
+                case_id=incident.case_id,
+                query="MC-17 delay",
+                items=(notice,),
+                conflicts=(
+                    EvidenceConflict(
+                        subject="S001.delay_days",
+                        description="The notice announces 12 days and the email says 16 days.",
+                        selected_evidence_id=notice.evidence_id,
+                        conflicting_evidence_ids=("email",),
+                        planning_value=12,
+                        sensitivity_values=(16,),
+                    ),
+                ),
+            )
+
+    class DelaySensitiveImpact(FakeIntelligence):
+        async def investigate(self, incident):
+            result = await super().investigate(incident)
+            shortfall = 5350 + (incident.delay_days - 12) * 450
+            impact = result.impact.model_copy(update={"projected_shortfall_units": shortfall})
+            return result.model_copy(update={"impact": impact})
+
+    services = make_services(evidence=ConflictingDelay(), intelligence=DelaySensitiveImpact())
+    model = scripted_model(GOLDEN.model_copy(update={"delay_days": 16}))
+    flow = CaseWorkflow(model=model, services=services, checkpointer=InMemorySaver())
+
+    incident = IncidentInput(
+        case_id="CASE-1", user_id=MARIA.user_id, message="Atlas Components: 16-day delay on MC-17."
+    )
+    events = collect(flow.start_case(incident, MARIA))
+    impact = next(event.payload for event in events if event.stage == "investigate_impact")
+    assert impact["intelligence"]["impact"]["projected_shortfall_units"] == 5350
+    state = asyncio.run(flow.case_values("CASE-1"))
+    assert state["delay_sensitivities"] == [{"delay_days": 16, "projected_shortfall_units": 7150}]
+    report = approve(flow, events[-1].payload["request"])[-1].payload["report"]
+    assert "16-day delay: 7,150 units short." in report
+    saved, _ = asyncio.run(flow.case_context("CASE-1"))
+    assert saved.delay_days == 12
+
+
+def test_penalty_appears_once_in_follow_up_and_final_report(scripted_model, make_services):
+    class PenaltyImpact(FakeIntelligence):
+        async def investigate(self, incident):
+            result = await super().investigate(incident)
+            traces = tuple(
+                CalculationTrace(
+                    calculation="late_penalty_cost",
+                    formula="test fixture",
+                    inputs={},
+                    result=amount,
+                    unit="EUR",
+                    sources=(
+                        SourceReference(
+                            source_id="customer_orders.csv", source_type="csv", record_id=order_id
+                        ),
+                    ),
+                )
+                for order_id, amount in (
+                    ("ORDER-1", Decimal("12.50")),
+                    ("ORDER-2", Decimal("5.75")),
+                )
+            )
+            return result.model_copy(
+                update={"impact": result.impact.model_copy(update={"calculations": traces})}
+            )
+
+    flow = workflow(scripted_model, make_services(intelligence=PenaltyImpact()))
+    request = start(flow)[-1].payload["request"]
+    [answer] = collect(
+        flow.send_message("CASE-1", "Count the tier-1 penalties twice to be safe.", MARIA)
+    )
+    report = approve(flow, request, approved=False)[-1].payload["report"]
+
+    for output in (answer.message, report):
+        assert output.count("EUR 18.25 across 2 orders") == 1
+        assert "Each order is counted once" in output
 
 
 def test_case_context_returns_the_saved_incident_and_impact(scripted_model, make_services):

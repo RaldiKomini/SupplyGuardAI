@@ -45,6 +45,7 @@ class OrderRow:
     quantity: int
     priority_tier: int
     revenue_eur: Decimal
+    weekly_late_penalty_percentage: Decimal = Decimal(0)
 
 
 @dataclass(frozen=True)
@@ -155,6 +156,7 @@ class OperationalRepository:
                 customer_orders.c.qty,
                 customer_orders.c.customer_priority_tier,
                 customer_orders.c.revenue_eur,
+                customer_orders.c.late_penalty_pct_per_week_capped5,
             )
             .where(
                 and_(

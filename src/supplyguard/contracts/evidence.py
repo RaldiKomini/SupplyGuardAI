@@ -25,6 +25,8 @@ class EvidenceConflict(ContractModel):
     selected_evidence_id: str | None = None
     conflicting_evidence_ids: tuple[str, ...]
     resolution_reason: str | None = None
+    planning_value: int | float | str | None = None
+    sensitivity_values: tuple[int | float | str, ...] = ()
 
 
 class EvidenceBundle(ContractModel):

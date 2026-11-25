@@ -1,6 +1,8 @@
 """Investigation steps: impact (Raldi), evidence (George), the Deep Agent investigation,
 and the recovery plan (Athanasia)."""
 
+import re
+
 from langchain_core.language_models import BaseChatModel
 from langchain_core.messages import AIMessage
 
@@ -21,11 +23,27 @@ from supplyguard.workflow.state import CaseState
 def make_investigation_steps(services: WorkflowServices, model: BaseChatModel) -> dict:
     async def investigate_impact(state: CaseState) -> dict:
         incident = ConfirmedIncident.model_validate(state["incident"])
+        baseline_days, alternatives = _delay_scenarios(incident, state.get("evidence"))
+        incident = incident.model_copy(update={"delay_days": baseline_days})
         try:
             intelligence = await services.intelligence.investigate(incident)
         except Exception as error:  # without impact numbers nothing can be planned
             return {"intelligence": None, "errors": [f"Impact analysis failed: {error}"]}
-        return {"intelligence": intelligence.model_dump(mode="json")}
+        scenarios = []
+        for delay_days in alternatives:
+            try:
+                result = await services.intelligence.investigate(
+                    incident.model_copy(update={"delay_days": delay_days})
+                )
+                shortfall = result.impact.projected_shortfall_units
+            except Exception:
+                shortfall = None
+            scenarios.append({"delay_days": delay_days, "projected_shortfall_units": shortfall})
+        return {
+            "incident": incident.model_dump(mode="json"),
+            "intelligence": intelligence.model_dump(mode="json"),
+            "delay_sensitivities": scenarios,
+        }
 
     async def collect_evidence(state: CaseState) -> dict:
         incident = ConfirmedIncident.model_validate(state["incident"])
@@ -78,7 +96,34 @@ def make_investigation_steps(services: WorkflowServices, model: BaseChatModel) -
 
 
 def route_after_impact(state: CaseState) -> str:
-    return "collect_evidence" if state.get("intelligence") else "stop_case"
+    return "deep_investigation" if state.get("intelligence") else "stop_case"
+
+
+def _delay_scenarios(incident: ConfirmedIncident, evidence_payload: dict | None):
+    if not evidence_payload:
+        return incident.delay_days, ()
+    evidence = EvidenceBundle.model_validate(evidence_payload)
+    items = {item.evidence_id: item for item in evidence.items}
+    component = re.compile(rf"(?<![\w-]){re.escape(incident.component_id)}(?![\w-])", re.I)
+    for conflict in evidence.conflicts:
+        notice = items.get(conflict.selected_evidence_id)
+        if (
+            conflict.subject == f"{incident.supplier_id}.delay_days"
+            and type(conflict.planning_value) is int
+            and conflict.planning_value >= 0
+            and notice is not None
+            and notice.document_type == "supplier_notice"
+            and notice.status != "superseded"
+            and component.search(notice.content)
+        ):
+            baseline_days = conflict.planning_value
+            alternatives = {
+                value
+                for value in (*conflict.sensitivity_values, incident.delay_days)
+                if type(value) is int and value >= 0 and value != baseline_days
+            }
+            return baseline_days, tuple(sorted(alternatives))
+    return incident.delay_days, ()
 
 
 def blocking_warnings(state: CaseState) -> list[str]:

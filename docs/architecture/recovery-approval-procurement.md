@@ -49,19 +49,19 @@ Each case is scored `passed` and `not_runnable`, so cases whose component is una
 
 The runner checks that the dataset examples match the local suite before scoring. Use `--dataset supplyguard-eval-105-v2` for a revised suite so earlier experiments keep their original reference answers.
 
-Result on 25 November 2026 (experiment `supplyguard-eval-1d7d6c53`):
+Result on 25 November 2026 (experiment `supplyguard-eval-6e86a4f0`):
 
 | Category | Total | Passed | Failed | Not runnable yet |
 |---|---:|---:|---:|---:|
 | golden | 1 | 1 | 0 | 0 |
 | extraction_and_impact | 64 | 64 | 0 | 0 |
 | prompt_injection | 10 | 10 | 0 | 0 |
-| policy_and_authorization | 10 | 6 | 0 | 4 |
+| policy_and_authorization | 10 | 10 | 0 | 0 |
 | ambiguity | 10 | 0 | 0 | 10 |
 | restart_recovery | 6 | 0 | 0 | 6 |
 | follow_up | 4 | 0 | 0 | 4 |
 
-All 81 runnable cases pass and none fail. The 24 not runnable cases are reported, not skipped: ambiguity needs LLM intake extraction in the harness, restart and follow-up need the case workflow wired into the harness, and four policy cases need application-layer authorization scopes (EV-0097), evidence retrieval with contract versions and source precedence (EV-0099, EV-0100) and the late-penalty calculation (EV-0101).
+This table records the earlier experiment. The current harness also runs ambiguity, follow-up, and restart cases. EV-0100 checks that intake reads the 16-day email before the workflow plans from the 12-day notice and calculates the 16-day sensitivity. EV-0101 checks that the follow-up and final report show the same total for the sourced order penalties. Evaluation approvals, simulated purchases, and case memory are isolated from the application. Append `--local` to run the same evaluation without uploading it to LangSmith.
 
 ## Tests
 
