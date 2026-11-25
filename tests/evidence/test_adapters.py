@@ -194,3 +194,15 @@ def test_saved_memory_still_ranks_after_restart_among_many_similar_memories(tmp_
         )
     )
     assert "MEM-RESTART-02" in {m.memory_id for m in found}
+
+
+def test_scan_reports_honestly_that_the_text_was_not_changed():
+    """scan() only reports: the user's message is not rewritten, so the finding must not
+    claim it was removed. blocked stays True (never obeyed; the evaluation harness checks it)."""
+    findings = GuardrailContentSafetyService().scan(EV_0072, "user_message")
+    assert findings
+    for finding in findings:
+        assert finding.blocked
+        assert "never obeyed" in finding.message
+        assert "not changed" in finding.message
+        assert "removed from model context" not in finding.message

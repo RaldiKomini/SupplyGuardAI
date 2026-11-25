@@ -27,13 +27,14 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import re
 from datetime import UTC, date, datetime
 from pathlib import Path
 
 from supplyguard.contracts import AuthorizationContext, ConfirmedIncident, EvidenceBundle
 from supplyguard.guardrails.access import enforce_scope, scopes_from
-from supplyguard.guardrails.injection import detect_injection, findings_from_flags
+from supplyguard.guardrails.injection import findings_from_flags, scan_text
 from supplyguard.retrieval.conflicts import extract_facts, resolve
 from supplyguard.retrieval.contract_mapping import (
     to_evidence_conflict,
@@ -59,6 +60,16 @@ from supplyguard.vectorstores.embeddings import get_embeddings
 from supplyguard.vectorstores.memory_store import InMemoryVectorStore
 
 DEFAULT_SCENARIO_DATE = date(2026, 10, 19)
+logger = logging.getLogger(__name__)
+
+
+def _add_missing(store, chunks: list[DocumentChunk], label: str) -> None:
+    """Index the chunks whose chunk_id is not in the store yet. Never rewrites stored chunks."""
+    stored = {c.chunk_id for c in store.all_chunks()}
+    missing = [c for c in chunks if c.chunk_id not in stored]
+    if missing:
+        logger.info("Indexing %d missing %s chunk(s) into %s", len(missing), label, store.name)
+        store.add(missing)
 
 
 def make_vector_store(backend: str, embeddings, collection: str):
@@ -136,8 +147,13 @@ class EvidenceService:
         service._memory_findings = memory_findings
         if index:
             doc_store.add(chunks)
-            if memories:
-                mem_store.add(memories)
+            mem_store.add(memories)
+        else:
+            # index=False means "the stores were filled by scripts/index_documents.py". If they
+            # were not (e.g. a fresh database), fill in what is missing instead of silently
+            # searching an empty vector store.
+            _add_missing(doc_store, chunks, "document")
+            _add_missing(mem_store, memories, "approved-memory")
         return service
 
     # ============================================================ shared protocol
@@ -314,7 +330,7 @@ class EvidenceService:
     def scan_untrusted_text(self, text: str, source_id: str = "user_attachment"):
         """For content that does not come from our index, e.g. a notice pasted into chat.
         Returns shared-contract SecurityFindings."""
-        return tuple(to_security_finding(f, None) for f in detect_injection(text, source_id))
+        return tuple(to_security_finding(f, None) for f in scan_text(text, source_id))
 
     # ============================================================ private helpers
     def _add_memory_chunks(self, chunks: list[DocumentChunk]) -> None:

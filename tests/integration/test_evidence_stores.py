@@ -6,7 +6,7 @@ Runs against the services from docker-compose (not mocks):
     $env:RUN_INTEGRATION="1"; uv run pytest tests/integration/test_evidence_stores.py -v
 
 Needs DATABASE_URL, CHROMA_HOST, CHROMA_PORT (from .env) and support-data at the repository
-root (or SUPPLYGUARD_SUPPORT_DATA). Indexing is an upsert, so running it twice is safe.
+root (or SUPPORT_DATA_DIR). Indexing is an upsert, so running it twice is safe.
 
 Checks, for each store:
   1. every supplied chunk is indexed;
@@ -42,7 +42,11 @@ pytestmark = [
 ]
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
-SUPPORT_DATA = Path(os.getenv("SUPPLYGUARD_SUPPORT_DATA", REPO_ROOT / "support-data"))
+SUPPORT_DATA = Path(
+    os.getenv("SUPPORT_DATA_DIR")
+    or os.getenv("SUPPLYGUARD_SUPPORT_DATA")
+    or REPO_ROOT / "support-data"
+)
 
 VIEWER = AuthorizationContext(user_id="u-ro-01", role="viewer", allowed_scopes=("public",))
 PROCUREMENT_MANAGER = AuthorizationContext(

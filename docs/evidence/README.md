@@ -126,7 +126,10 @@ similar = await memories.search("MC-17 delay", authorization, limit=3)  # -> Res
 ```
 
 - `scan()` uses the same detector as ingestion. A negated safety rule in the user's own text
-  ("Do not create a purchase order without approval") is not flagged.
+  ("Do not create a purchase order without approval") is not flagged. `scan()` does not
+  rewrite the text, so its findings say "reported and treated as data, never obeyed";
+  `blocked` is True because the instruction is never acted on (the evaluation harness
+  relies on this).
 - `save()` scans `strategy` and `approved_summary`, validates the IDs, and writes to the
   separate memory collection. `search()` returns only memories within the user's scopes,
   with the sanitized text that was indexed. Memories come back from the stored chunk text,
@@ -201,6 +204,11 @@ uv run python scripts/benchmark_retrieval.py --offline      # in-memory stand-in
 uv run python -m supplyguard.guardrails.red_team support-data docs/evidence/red_team_findings.md
 ```
 
+`EvidenceService.from_support_data(..., index=False)` (what the workflow runtime uses) still
+indexes any document or memory chunk that is missing from the store, so a fresh database
+is filled on first start. Stored chunks are never rewritten that way; run
+`scripts/index_documents.py` (or `index=True`) to refresh changed documents.
+
 Check the deployed pgvector and ChromaDB services with the supplied documents (indexes
 them, then checks scopes inside the database, injection flagging at the workflow boundary,
 and the memory store):
@@ -211,7 +219,7 @@ $env:RUN_INTEGRATION="1"; uv run pytest tests/integration/test_evidence_stores.p
 ```
 
 `support-data/` is not committed (COLLABORATION.md). Put your copy at the repository root or
-set `SUPPLYGUARD_SUPPORT_DATA=/path/to/support-data`. Without it, the data-dependent tests are
+set `SUPPORT_DATA_DIR=/path/to/support-data` (the same variable the workflow reads). Without it, the data-dependent tests are
 skipped so CI stays green; the pure guardrail tests still run.
 
 Dependencies needed (to be added to `pyproject.toml` in a shared-file PR): `numpy`,
