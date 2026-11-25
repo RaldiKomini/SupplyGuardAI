@@ -151,8 +151,9 @@ class CaseWorkflow:
         if pending and pending["type"] == "clarification":  # the answer resumes intake
             stream = self._run(case_id, Command(resume=message))
         elif pending:  # waiting for approval: answer, but keep waiting
-            findings = self._services.content_safety.scan(message, "user_message")
-            answer = await answer_follow_up(self._model, self._services, state.values, message)
+            answer, findings = await answer_follow_up(
+                self._model, self._services, state.values, message
+            )
             payload = {"security_findings": [f.model_dump(mode="json") for f in findings]}
             yield _event(case_id, UIEventType.PROGRESS, "follow_up", answer, payload)
             return

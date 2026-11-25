@@ -306,9 +306,20 @@ def test_every_step_is_saved_before_the_next_starts(scripted_model, make_service
     assert seen["durability"] == "sync"
 
 
-def test_follow_up_questions_are_scanned_for_injection(scripted_model, make_services):
-    flow = workflow(scripted_model, make_services(), FollowUpIntent(kind="explain"))
-    start(flow)
+@pytest.mark.parametrize("completed", [False, True])
+def test_flagged_follow_up_does_not_reach_the_model(
+    scripted_model, make_services, monkeypatch, completed
+):
+    flow = workflow(scripted_model, make_services())
+    request = start(flow)[-1].payload["request"]
+    if completed:
+        approve(flow, request)
+
+    def unexpected_call(*args, **kwargs):
+        pytest.fail("flagged follow-up reached the model")
+
+    monkeypatch.setattr(flow._model, "with_structured_output", unexpected_call)
+    monkeypatch.setattr(flow._model, "ainvoke", unexpected_call)
 
     events = collect(
         flow.send_message(
@@ -316,8 +327,10 @@ def test_follow_up_questions_are_scanned_for_injection(scripted_model, make_serv
         )
     )
 
-    assert events[0].payload["security_findings"]  # flagged, while the case keeps waiting
-    assert asyncio.run(flow.list_cases(MARIA))[0].stage == "await_approval"
+    assert events[0].payload["security_findings"]
+    assert "restate your question" in events[0].message
+    if not completed:
+        assert asyncio.run(flow.list_cases(MARIA))[0].stage == "await_approval"
 
 
 def test_report_labels_agent_notes_and_shows_plain_quantities(scripted_model, make_services):
