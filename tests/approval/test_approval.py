@@ -215,3 +215,19 @@ def test_split_purchases_above_supplier_capacity_are_rejected() -> None:
             policy=POLICY,
             requested_at=NOW,
         )
+
+
+def test_purchase_for_another_component_is_rejected() -> None:
+    first = PURCHASE.model_copy(update={"payload": {**PURCHASE.payload, "qty": 2000}})
+    other_component = first.model_copy(
+        update={"action_id": "ACT-4", "payload": {**first.payload, "component_id": "MC-18"}}
+    )
+
+    with pytest.raises(RevalidationError, match="MC-18 is not the incident component"):
+        revalidate_request(
+            _request(),
+            (TRANSFER, EXPEDITE, first, other_component),
+            inputs=INPUTS,
+            policy=POLICY,
+            requested_at=NOW,
+        )

@@ -36,6 +36,13 @@ def reprice_actions(
     repriced: list[RecoveryAction] = []
     problems: list[str] = []
     for action in actions:
+        component_id = action.payload.get("component_id", inputs.incident.component_id)
+        if component_id != inputs.incident.component_id:
+            problems.append(
+                f"{action.action_id}: component {component_id} is not the incident component "
+                f"{inputs.incident.component_id}"
+            )
+            continue
         if action.action_type == RecoveryActionType.PURCHASE_ALTERNATIVE:
             new_action, found = _purchase(action, inputs)
         elif action.action_type == RecoveryActionType.TRANSFER_INVENTORY:
