@@ -101,6 +101,20 @@ def test_rejected_suppliers_show_their_estimated_cost_not_zero() -> None:
         assert any("for comparison only" in a for a in option.assumptions)
 
 
+def test_zero_capacity_supplier_has_zero_comparison_cost() -> None:
+    capabilities = tuple(
+        c.model_copy(update={"monthly_capacity_units": 0}) if c.supplier_id == "S003" else c
+        for c in IMPACT.supplier_capabilities
+    )
+    impact = IMPACT.model_copy(update={"supplier_capabilities": capabilities})
+    plan = build_recovery_plan(replace(INPUTS, impact=impact))
+    rejected = next(o for o in plan.options if o.option_id == "OPT-REJECTED-S003")
+
+    assert rejected.recovery_cost_eur == 0
+    assert not rejected.actions
+    assert rejected.rejection_reasons
+
+
 def test_minimum_order_above_capacity_rejects_the_supplier() -> None:
     capabilities = tuple(
         c.model_copy(update={"minimum_order_units": 3500}) if c.supplier_id == "S004" else c

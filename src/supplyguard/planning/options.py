@@ -29,9 +29,8 @@ from supplyguard.planning.screening import (
 )
 
 REVENUE_NOTE = (
-    "Revenue at risk is what stays exposed after this option: the case exposure times the "
-    "share of the shortfall left uncovered. It is reported separately from recovery cost, "
-    "is not an expected loss, and the total exposure stays in the impact report."
+    "Proportional revenue exposure estimate: case exposure times the share of the unit "
+    "shortfall left uncovered. Customer due dates and order allocation are outside this estimate."
 )
 REJECTED_COST_NOTE = (
     "Estimated cost of buying the shortfall from this supplier, up to its monthly capacity, "
@@ -306,8 +305,7 @@ def residual_revenue_at_risk(inputs: PlanningInputs, uncovered_units: int) -> De
 
 def _rejected_cost(inputs: PlanningInputs, capability: SupplierCapability) -> Decimal:
     shortfall = inputs.impact.projected_shortfall_units
-    capacity = capability.monthly_capacity_units
-    quantity = min(shortfall, capacity) if capacity > 0 else shortfall
+    quantity = min(shortfall, capability.monthly_capacity_units)
     trace = inputs.costs.estimate_purchase(
         PurchaseCostInput(
             quantity=quantity,
