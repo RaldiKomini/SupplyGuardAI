@@ -318,3 +318,11 @@ def test_follow_up_questions_are_scanned_for_injection(scripted_model, make_serv
 
     assert events[0].payload["security_findings"]  # flagged, while the case keeps waiting
     assert asyncio.run(flow.list_cases(MARIA))[0].stage == "await_approval"
+
+
+def test_report_labels_agent_notes_and_shows_plain_quantities(scripted_model, make_services):
+    flow = workflow(scripted_model, make_services())
+    report = approve(flow, start(flow)[-1].payload["request"])[-1].payload["report"]
+
+    assert "## AI investigation notes (unverified)" in report
+    assert "daily demand 450 units" in report  # not "450.0000"

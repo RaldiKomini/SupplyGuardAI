@@ -83,7 +83,10 @@ state (nothing on disk), and one sub-agent, `evidence-checker`. Its tools are re
 the case data already collected (evidence already filtered by the user's scopes) and
 `record_finding`, which refuses findings without sources from the case. It has no procurement,
 approval or other write tool. It runs at most `MAX_AGENT_STEPS` graph steps; at the limit the
-findings so far are kept. Findings go to the report; planning stays with the planning service.
+findings so far are kept. Findings go to the report as "AI investigation notes (unverified)"; planning stays with the
+planning service. The agent may only mark findings info or warning (blocking decisions are
+deterministic), records at most six, and a finding that calls a supplier's certification
+expired is refused when master data says it is valid.
 
 ## Application entry point
 
