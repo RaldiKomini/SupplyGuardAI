@@ -6,6 +6,7 @@ It starts from the golden MC-17 incident and tests the rules, not the intake ext
 """
 
 from collections.abc import Callable
+from dataclasses import replace
 from datetime import UTC, date, datetime
 from decimal import Decimal
 
@@ -28,6 +29,7 @@ from supplyguard.contracts.incident import ConfirmedIncident
 from supplyguard.contracts.protocols import OperationalIntelligenceService
 from supplyguard.evaluation.cases import EvaluationCase
 from supplyguard.planning.options import PlanningInputs, build_recovery_plan
+from supplyguard.planning.screening import validate_order_quantity
 
 GOLDEN_INCIDENT = {"supplier_id": "S001", "component_id": "MC-17", "delay_days": 12}
 SCENARIO_DATE = date(2026, 10, 19)
@@ -121,6 +123,27 @@ def _rejected_for(supplier_id: str, words: tuple[str, ...]) -> Check:
     return check
 
 
+def _capability(inputs: PlanningInputs, supplier_id: str):
+    return next(
+        (c for c in inputs.impact.supplier_capabilities if c.supplier_id == supplier_id), None
+    )
+
+
+def _helios_rejected(inputs: PlanningInputs, plan: RecoveryPlan, policy) -> list[str]:
+    """Helios is rejected for its 21-day lead time and cannot cover the shortfall alone."""
+    failures = _rejected_for("S002", ("lead time 21",))(inputs, plan, policy)
+    helios = _capability(inputs, "S002")
+    shortfall = inputs.impact.projected_shortfall_units
+    if helios is None:
+        return [*failures, "Helios has no supplier record"]
+    if not any("capacity" in r for r in validate_order_quantity(helios, shortfall)):
+        failures.append(
+            f"buying the whole shortfall of {shortfall} from Helios is not limited by its "
+            f"monthly capacity of {helios.monthly_capacity_units}"
+        )
+    return failures
+
+
 def _quarantine_not_used(inputs: PlanningInputs, plan, policy) -> list[str]:
     impact = inputs.impact
     usable = sum(p.on_hand - p.reserved - p.quarantined for p in impact.inventory)
@@ -150,32 +173,66 @@ def _purchase(supplier_id: str, quantity: int, price: str) -> RecoveryAction:
 
 
 def _large_order_rejected(inputs: PlanningInputs, plan, policy) -> list[str]:
-    """Ordering 9,000 from Cordillera is rejected for capacity (and the spending cap)."""
-    option = next(o for o in plan.options if o.option_id == plan.recommended_option_id)
-    request = build_approval_request(
-        case_id=inputs.incident.case_id, option=option, policy=policy, requested_at=NOW
+    """9,000 Cordillera units break both the capacity and the EUR 75,000 cap, checked separately.
+
+    The cap is checked with the capacity raised, so a capacity rejection cannot hide a
+    missing budget check.
+    """
+    quantity = 9000
+    request = _recommended_request(inputs, plan, policy)
+    failures = []
+    try:
+        _revalidate(request, (_purchase("S004", quantity, "0"),), inputs, policy)
+        failures.append(f"an order of {quantity} Cordillera units was accepted")
+    except RevalidationError as error:
+        if "capacity" not in str(error):
+            failures.append(f"rejected, but not for capacity: {error}")
+
+    cordillera = _capability(inputs, "S004")
+    if cordillera is None:
+        return [*failures, "Cordillera has no supplier record"]
+    unlimited = cordillera.model_copy(update={"monthly_capacity_units": quantity})
+    capabilities = tuple(
+        unlimited if c.supplier_id == "S004" else c for c in inputs.impact.supplier_capabilities
+    )
+    no_capacity_limit = replace(
+        inputs, impact=inputs.impact.model_copy(update={"supplier_capabilities": capabilities})
     )
     try:
-        revalidate_request(
-            request,
-            (_purchase("S004", 9000, "0"),),
-            inputs=inputs,
-            policy=policy,
-            requested_at=NOW,
+        _revalidate(request, (_purchase("S004", quantity, "0"),), no_capacity_limit, policy)
+        failures.append(
+            f"an order of {quantity} Cordillera units within the "
+            f"{inputs.incident.spending_cap_eur} EUR cap was expected to be rejected"
         )
     except RevalidationError as error:
-        if "capacity" in str(error):
-            return []
-        return [f"rejected, but not for capacity: {error}"]
-    return ["an order of 9,000 Cordillera units was accepted"]
+        if "spending cap" not in str(error):
+            failures.append(f"rejected, but not for the spending cap: {error}")
+    return failures
+
+
+def _recommended_request(inputs: PlanningInputs, plan: RecoveryPlan, policy):
+    option = next(o for o in plan.options if o.option_id == plan.recommended_option_id)
+    return build_approval_request(
+        case_id=inputs.incident.case_id, option=option, policy=policy, requested_at=NOW
+    )
+
+
+def _revalidate(request, actions, inputs: PlanningInputs, policy):
+    return revalidate_request(request, actions, inputs=inputs, policy=policy, requested_at=NOW)
+
+
+def _with_purchase_quantity(actions, quantity: int):
+    return tuple(
+        a.model_copy(update={"payload": {**a.payload, "qty": quantity}})
+        if a.action_type == RecoveryActionType.PURCHASE_ALTERNATIVE
+        else a
+        for a in actions
+    )
 
 
 def _edit_needs_new_approval(inputs: PlanningInputs, plan, policy) -> list[str]:
-    """After approval, changing the quantity invalidates the decision."""
-    option = next(o for o in plan.options if o.option_id == plan.recommended_option_id)
-    request = build_approval_request(
-        case_id=inputs.incident.case_id, option=option, policy=policy, requested_at=NOW
-    )
+    """An invalid edit is rejected; a valid edit creates a new version the old approval misses."""
+    request = _recommended_request(inputs, plan, policy)
     approved = ApprovalDecision(
         approval_request_id=request.approval_request_id,
         case_id=request.case_id,
@@ -188,20 +245,21 @@ def _edit_needs_new_approval(inputs: PlanningInputs, plan, policy) -> list[str]:
     failures = []
     if decision_problems(request, approved):
         failures.append("the original approval does not authorise the original request")
-    edited = tuple(
-        a.model_copy(update={"payload": {**a.payload, "qty": 6000}})
-        if a.action_type == RecoveryActionType.PURCHASE_ALTERNATIVE
-        else a
-        for a in request.actions
-    )
+
     try:
-        new_request = revalidate_request(
-            request, edited, inputs=inputs, policy=policy, requested_at=NOW
-        )
+        _revalidate(request, _with_purchase_quantity(request.actions, 6000), inputs, policy)
+        failures.append("the 6,000-unit edit above capacity was accepted")
     except RevalidationError:
-        return failures  # the edit is rejected outright: nothing can execute
+        pass
+
+    try:
+        new_request = _revalidate(
+            request, _with_purchase_quantity(request.actions, 2000), inputs, policy
+        )
+    except RevalidationError as error:
+        return [*failures, f"a valid 2,000-unit edit was rejected: {error}"]
     if new_request.payload_version != request.payload_version + 1:
-        failures.append("the edit did not create a new approval version")
+        failures.append("the valid edit did not create a new approval version")
     if not decision_problems(new_request, approved):
         failures.append("the old approval still authorises the edited payload")
     return failures
@@ -219,7 +277,7 @@ def _shared_upstream_flagged(inputs: PlanningInputs, plan, policy) -> list[str]:
 
 CHECKS: dict[str, Check] = {
     "EV-0092": _rejected_for("S003", ("certification", "expired")),
-    "EV-0093": _rejected_for("S002", ("lead time 21",)),
+    "EV-0093": _helios_rejected,
     "EV-0094": _quarantine_not_used,
     "EV-0095": _large_order_rejected,
     "EV-0096": _edit_needs_new_approval,

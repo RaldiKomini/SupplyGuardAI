@@ -1,5 +1,6 @@
 """The policy_and_authorization cases run against planning, revalidation and approval."""
 
+from decimal import Decimal
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -59,3 +60,40 @@ async def test_a_plan_that_recommends_borealis_fails() -> None:
     result = await PolicyEvaluator(LaxImpactService(), POLICY).evaluate(case)
 
     assert result.status is EvaluationStatus.FAILED
+
+
+def _with_supplier(supplier_id: str, **changes) -> GoldenImpactService:
+    capabilities = tuple(
+        c.model_copy(update=changes) if c.supplier_id == supplier_id else c
+        for c in IMPACT.supplier_capabilities
+    )
+    impact = IMPACT.model_copy(update={"supplier_capabilities": capabilities})
+
+    class ChangedImpactService:
+        async def investigate(self, incident):
+            return SimpleNamespace(impact=impact)
+
+    return ChangedImpactService()
+
+
+def _case(case_id: str):
+    return next(c for c in POLICY_CASES if c.id == case_id)
+
+
+async def test_helios_with_enough_capacity_fails_the_case() -> None:
+    service = _with_supplier("S002", monthly_capacity_units=10000)
+
+    result = await PolicyEvaluator(service, POLICY).evaluate(_case("EV-0093"))
+
+    assert result.status is EvaluationStatus.FAILED
+    assert any("capacity" in finding for finding in result.findings)
+
+
+async def test_cordillera_order_within_the_cap_fails_the_case() -> None:
+    # 9,000 x 5.00 = 45,000 EUR: capacity still rejects it, but the cap check must not pass.
+    service = _with_supplier("S004", unit_price_eur=Decimal("5.00"))
+
+    result = await PolicyEvaluator(service, POLICY).evaluate(_case("EV-0095"))
+
+    assert result.status is EvaluationStatus.FAILED
+    assert any("cap" in finding for finding in result.findings)
