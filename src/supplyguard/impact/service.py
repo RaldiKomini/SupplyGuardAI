@@ -1,14 +1,19 @@
 """Coordinates repositories, deterministic calculations, graph, and risk evidence."""
 
 import asyncio
+import re
+from collections.abc import Sequence
+from datetime import date, timedelta
 from decimal import Decimal
+
+from pydantic import ValidationError
 
 from supplyguard.calculations import (
     DeterministicCostService,
     days_of_cover,
-    projected_shortfall,
     projected_stockout_date,
 )
+from supplyguard.calculations.impact import shortfall_from_demand
 from supplyguard.contracts import (
     AtRiskOrder,
     CalculationTrace,
@@ -28,11 +33,106 @@ from supplyguard.contracts import (
 from supplyguard.contracts.protocols import OperationalCostService
 from supplyguard.external_risk.service import ExternalRiskService
 from supplyguard.graph.client import DependencyContext, DependencyGraph
-from supplyguard.repositories.operational import OperationalRepository
+from supplyguard.repositories.operational import (
+    InventoryRow,
+    OpenPurchaseOrderRow,
+    OperationalRepository,
+    WeeklyDemandRow,
+)
+
+PURCHASE_ORDER_ID = re.compile(r"\bPO-\d{4}-\d+\b", re.IGNORECASE)
+WEEK = timedelta(days=7)
 
 
 def csv_source(filename: str, record_id: str | None = None) -> SourceReference:
     return SourceReference(source_id=filename, source_type="csv", record_id=record_id)
+
+
+def _delayed_order(
+    incident: ConfirmedIncident, orders: Sequence[OpenPurchaseOrderRow]
+) -> tuple[OpenPurchaseOrderRow | None, DataQualityWarning | None]:
+    matching = [
+        order
+        for order in orders
+        if order.supplier_id == incident.supplier_id and order.component_id == incident.component_id
+    ]
+    named_ids = {po.upper() for po in PURCHASE_ORDER_ID.findall(incident.original_message)}
+    if len(named_ids) == 1:
+        named_id = next(iter(named_ids))
+        order = next((order for order in matching if order.po_id.upper() == named_id), None)
+        record_id = named_id
+        message = f"{named_id} is not a pending order for this supplier and component."
+    elif named_ids:
+        order = None
+        record_id = incident.component_id
+        message = "The incident names multiple purchase orders and the delayed order is unclear."
+    else:
+        order = min(
+            (order for order in matching if order.promised_date >= incident.scenario_date),
+            key=lambda order: (order.promised_date, order.po_id),
+            default=None,
+        )
+        record_id = incident.component_id
+        message = "No upcoming pending order matches the affected supplier and component."
+    if order is not None:
+        return order, None
+    return None, DataQualityWarning(
+        issue_type="delayed_order_unconfirmed",
+        message=f"{message} The demand window is provisional and uses the stated delay only.",
+        severity=Severity.WARNING,
+        record_id=record_id,
+        sources=(csv_source("purchase_orders.csv", record_id),),
+    )
+
+
+def _weighted_weekly_units(
+    rows: Sequence[WeeklyDemandRow], start: date, end: date
+) -> dict[str, int]:
+    """Weight each weekly quantity by overlapping days before dividing by seven."""
+    weighted: dict[str, int] = {}
+    for row in rows:
+        overlap = (min(end, row.week_start + WEEK) - max(start, row.week_start)).days
+        if overlap > 0:
+            weighted[row.factory_id] = (
+                weighted.get(row.factory_id, 0) + row.component_units * overlap
+            )
+    return weighted
+
+
+def _verified_inventory(
+    rows: Sequence[InventoryRow],
+) -> tuple[list[tuple[InventoryRow, InventoryPosition]], list[DataQualityWarning]]:
+    verified: list[tuple[InventoryRow, InventoryPosition]] = []
+    warnings: list[DataQualityWarning] = []
+    for row in rows:
+        record_id = f"{row.component_id}|{row.location_id}"
+        sources = (csv_source("inventory.csv", record_id),)
+        try:
+            position = InventoryPosition(
+                component_id=row.component_id,
+                location_id=row.location_id,
+                on_hand=row.on_hand,
+                reserved=row.reserved,
+                quarantined=row.quarantined,
+                usable=row.usable,
+                sources=sources,
+            )
+        except ValidationError:
+            warnings.append(
+                DataQualityWarning(
+                    issue_type="inventory_total_unconfirmed",
+                    message=(
+                        f"Stock at {row.location_id} is inconsistent and was excluded. "
+                        "The stock total is a verified subtotal and shortfall is provisional."
+                    ),
+                    severity=Severity.BLOCKING,
+                    record_id=record_id,
+                    sources=sources,
+                )
+            )
+        else:
+            verified.append((row, position))
+    return verified, warnings
 
 
 class DefaultOperationalIntelligenceService:
@@ -58,20 +158,19 @@ class DefaultOperationalIntelligenceService:
             )
             inventory_rows = await self.repository.inventory_for_component(incident.component_id)
             product_ids = await self.repository.affected_product_ids(incident.component_id)
-            daily_demand = await self.repository.average_daily_component_demand(
-                incident.component_id, incident.scenario_date
-            )
-            factory_demand = await self.repository.daily_demand_by_factory(
-                incident.component_id, incident.scenario_date
-            )
             orders = await self.repository.open_orders(product_ids, incident.scenario_date)
             capabilities = await self.repository.supplier_capabilities(incident.component_id)
             purchase_orders = await self.repository.open_purchase_orders(incident.component_id)
+            delayed_order, delivery_warning = _delayed_order(incident, purchase_orders)
+            original_arrival = (
+                delayed_order.promised_date if delayed_order else incident.scenario_date
+            )
+            delayed_arrival = original_arrival + timedelta(days=incident.delay_days)
+            demand_rows = await self.repository.weekly_component_demand(
+                incident.component_id, incident.scenario_date, delayed_arrival
+            )
             data_warnings = await self.repository.quality_warnings(
                 (incident.supplier_id, incident.component_id, *product_ids)
-            )
-            arrival_days = await self.repository.days_until_next_delivery(
-                incident.supplier_id, incident.component_id, incident.scenario_date
             )
         graph_context = graph_task.result()
 
@@ -80,6 +179,8 @@ class DefaultOperationalIntelligenceService:
             region=graph_context.upstream_regions[0] if graph_context.upstream_regions else None,
         )
         warnings = [*data_warnings, *risk_warnings]
+        if delivery_warning is not None:
+            warnings.append(delivery_warning)
         if set(product_ids) != set(graph_context.product_ids):
             warnings.append(
                 DataQualityWarning(
@@ -96,50 +197,40 @@ class DefaultOperationalIntelligenceService:
                 )
             )
 
-        inventory_contracts = tuple(
-            InventoryPosition(
-                component_id=row.component_id,
-                location_id=row.location_id,
-                on_hand=row.on_hand,
-                reserved=row.reserved,
-                quarantined=row.quarantined,
-                usable=row.usable,
-                sources=(csv_source("inventory.csv", f"{row.component_id}|{row.location_id}"),),
+        verified_inventory, inventory_warnings = _verified_inventory(inventory_rows)
+        warnings.extend(inventory_warnings)
+        total_usable = sum(position.usable for _, position in verified_inventory)
+        window_days = max(0, (delayed_arrival - incident.scenario_date).days)
+        weighted_units = _weighted_weekly_units(
+            demand_rows, incident.scenario_date, delayed_arrival
+        )
+        demand_before_arrival = Decimal(sum(weighted_units.values())) / 7
+        shortfall = shortfall_from_demand(total_usable, demand_before_arrival)
+        average_divisor = 7 * max(1, window_days)
+        daily_demand = Decimal(sum(weighted_units.values())) / average_divisor
+        demand_by_factory = {
+            factory: Decimal(units) / average_divisor for factory, units in weighted_units.items()
+        }
+        coverage = []
+        for row, position in verified_inventory:
+            local_demand = (
+                demand_by_factory.get(row.factory_id, Decimal(0))
+                if row.factory_id
+                else daily_demand
             )
-            for row in inventory_rows
-        )
-        total_usable = sum(row.usable for row in inventory_rows)
-        shortfall = projected_shortfall(
-            total_usable, daily_demand, arrival_days, incident.delay_days
-        )
-        demand_by_factory = {row.factory_id: row.daily_units for row in factory_demand}
-        coverage = tuple(
-            CoveragePosition(
-                factory_id=row.factory_id,
-                location_id=row.location_id,
-                usable_units=row.usable,
-                daily_demand_units=(
-                    demand_by_factory.get(row.factory_id, Decimal(0))
-                    if row.factory_id
-                    else daily_demand
-                ),
-                days_of_cover=days_of_cover(
-                    row.usable,
-                    demand_by_factory.get(row.factory_id, Decimal(0))
-                    if row.factory_id
-                    else daily_demand,
-                ),
-                projected_stockout_date=projected_stockout_date(
-                    incident.scenario_date,
-                    row.usable,
-                    demand_by_factory.get(row.factory_id, Decimal(0))
-                    if row.factory_id
-                    else daily_demand,
-                ),
-                sources=(csv_source("inventory.csv", row.location_id),),
+            coverage.append(
+                CoveragePosition(
+                    factory_id=row.factory_id,
+                    location_id=row.location_id,
+                    usable_units=position.usable,
+                    daily_demand_units=local_demand,
+                    days_of_cover=days_of_cover(position.usable, local_demand),
+                    projected_stockout_date=projected_stockout_date(
+                        incident.scenario_date, position.usable, local_demand
+                    ),
+                    sources=position.sources,
+                )
             )
-            for row in inventory_rows
-        )
         at_risk_orders = tuple(
             AtRiskOrder(
                 order_id=row.order_id,
@@ -194,19 +285,25 @@ class DefaultOperationalIntelligenceService:
         calculations = (
             CalculationTrace(
                 calculation="projected_shortfall",
-                formula="max(0, daily_demand * (days_to_arrival + delay_days) - usable)",
+                formula="ceil(max(0, demand_before_arrival - usable))",
                 inputs={
                     "daily_demand": daily_demand,
-                    "days_to_arrival": arrival_days,
+                    "days_to_arrival": (original_arrival - incident.scenario_date).days,
                     "delay_days": incident.delay_days,
+                    "window_days": window_days,
+                    "demand_before_arrival": demand_before_arrival,
                     "usable": total_usable,
+                    "excluded_inventory_locations": len(inventory_warnings),
                 },
                 result=shortfall,
                 unit="units",
                 sources=(
                     csv_source("inventory.csv", incident.component_id),
                     csv_source("production_schedule.csv", incident.component_id),
-                    csv_source("purchase_orders.csv", incident.component_id),
+                    csv_source(
+                        "purchase_orders.csv",
+                        delayed_order.po_id if delayed_order else incident.component_id,
+                    ),
                 ),
             ),
             *expedite_calculations,
@@ -214,12 +311,14 @@ class DefaultOperationalIntelligenceService:
         impact = ImpactReport(
             case_id=incident.case_id,
             component_id=incident.component_id,
-            inventory=inventory_contracts,
+            inventory=tuple(position for _, position in verified_inventory),
             total_usable_units=total_usable,
             daily_demand_units=daily_demand,
             projected_shortfall_units=shortfall,
-            first_stockout_date=projected_stockout_date(
-                incident.scenario_date, total_usable, daily_demand
+            first_stockout_date=(
+                None
+                if inventory_warnings
+                else projected_stockout_date(incident.scenario_date, total_usable, daily_demand)
             ),
             affected_product_ids=product_ids,
             affected_factory_ids=graph_context.factory_ids,
@@ -227,7 +326,7 @@ class DefaultOperationalIntelligenceService:
             revenue_at_risk_eur=sum((row.revenue_eur for row in orders), start=Decimal(0)),
             supplier_capabilities=supplier_capabilities,
             open_purchase_orders=open_purchase_orders,
-            coverage=coverage,
+            coverage=tuple(coverage),
             calculations=calculations,
             warnings=tuple(warnings),
             sources=(csv_source("components.csv", incident.component_id),),

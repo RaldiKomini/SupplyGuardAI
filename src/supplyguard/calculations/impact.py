@@ -3,6 +3,8 @@
 from datetime import date, timedelta
 from decimal import ROUND_CEILING, Decimal
 
+LATE_PENALTY_CAP_PERCENTAGE = Decimal(5)
+
 
 def usable_inventory(on_hand: int, reserved: int, quarantined: int) -> int:
     result = on_hand - reserved - quarantined
@@ -29,7 +31,14 @@ def projected_shortfall(
     if min(usable_units, days_until_original_arrival, delay_days) < 0 or daily_demand_units < 0:
         raise ValueError("shortfall inputs cannot be negative")
     demand_until_arrival = daily_demand_units * (days_until_original_arrival + delay_days)
-    missing = max(Decimal(0), demand_until_arrival - usable_units)
+    return shortfall_from_demand(usable_units, demand_until_arrival)
+
+
+def shortfall_from_demand(usable_units: int, demand_units: Decimal) -> int:
+    """Round a shortage from total scheduled demand up to a whole part."""
+    if min(usable_units, demand_units) < 0:
+        raise ValueError("shortfall inputs cannot be negative")
+    missing = max(Decimal(0), demand_units - usable_units)
     return int(missing.to_integral_value(rounding=ROUND_CEILING))
 
 
@@ -46,14 +55,13 @@ def estimate_late_penalty(
     revenue_eur: Decimal,
     delay_days: int,
     weekly_rate_percentage: Decimal,
-    *,
-    cap_weeks: int = 5,
 ) -> Decimal:
-    """Apply a weekly order penalty, charging any partial week as a full week."""
+    """Charge started weeks up to the finance cap of 5% of order value."""
     if min(revenue_eur, weekly_rate_percentage) < 0 or delay_days < 0:
         raise ValueError("penalty inputs cannot be negative")
-    weeks = min(cap_weeks, int((Decimal(delay_days) / 7).to_integral_value(rounding=ROUND_CEILING)))
-    return (revenue_eur * (weekly_rate_percentage / 100) * weeks).quantize(Decimal("0.01"))
+    weeks = (delay_days + 6) // 7
+    percentage = min(weekly_rate_percentage * weeks, LATE_PENALTY_CAP_PERCENTAGE)
+    return (revenue_eur * percentage / 100).quantize(Decimal("0.01"))
 
 
 def expedite_cost(base_cost_eur: Decimal, fee_percentage: Decimal) -> Decimal:

@@ -49,11 +49,19 @@ $env:NEO4J_PASSWORD = "change-me"
 uv run supplyguard-load-graph support-data/structured
 ```
 
-The loaders read but never modify the supplied files. Missing primary IDs and invalid inventory balances are blocking findings: the raw record remains staged, but it is not promoted as an authoritative fact. Stale or conflicting data is returned as a warning.
+The loaders read but never modify the supplied files. Raw rows remain staged, and rows missing required typed fields are excluded from the core upsert. If a typed inventory record fails the balance check, the impact report excludes that location and emits a blocking `inventory_total_unconfirmed` warning with its source. The report still includes its verified stock subtotal and provisional shortfall.
 
 ## Calculations
 
 Business formulas live in `supplyguard.calculations`; they have no database, network, or model dependency. Important results include their formula, typed inputs, result, unit, and sources.
+
+An explicit purchase order ID in the original incident message takes priority if the
+order is pending for the affected supplier and component. Without an ID, the service
+uses the earliest upcoming matching order. An unverified order yields a provisional
+demand window starting from the scenario date and a `delayed_order_unconfirmed` warning.
+The shortfall uses the days in each production week that overlap the window from the
+scenario date up to the delayed arrival. For MC-17 that means 7 + 7 + 5 days.
+Coverage divides verified stock by the average daily demand over that window.
 
 Open customer orders due from the incident date through 60 days later form the
 initial exposure set for affected products. The total represents exposure before
@@ -69,6 +77,11 @@ or policy source with each input. Both methods multiply the proposed quantity by
 rate and round the total to cents. For MC-17, 3,000 Cordillera units at €9.80 cost
 €29,400 and moving 800 hub units at €0.12 costs €96. With the €882 expedite fee,
 these actions total €30,378. The planner still checks capacity, stock and approvals.
+
+Customer late-delivery penalties charge each started week at the order's weekly
+rate, capped at 5% of order value. For a €1,000 order at 2% per week, 15 late
+days count as three weeks and the penalty is capped at €50. The legacy
+`cap_weeks` input remains accepted for compatibility.
 
 The MC-17 golden scenario verifies:
 
