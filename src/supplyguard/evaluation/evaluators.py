@@ -7,10 +7,12 @@ from datetime import date
 from decimal import Decimal
 from pathlib import Path
 
+from supplyguard.approval.policy import ApprovalPolicy
 from supplyguard.contracts.events import EvaluationResult, EvaluationStatus
 from supplyguard.contracts.incident import ConfirmedIncident
 from supplyguard.contracts.protocols import ContentSafetyService, OperationalIntelligenceService
 from supplyguard.evaluation.cases import EvaluationCase, EvaluationCategory
+from supplyguard.evaluation.policy import PolicyEvaluator
 from supplyguard.evaluation.runner import CaseEvaluator, UnavailableEvaluator
 
 EVALUATION_USER_ID = "evaluation-harness"
@@ -165,9 +167,6 @@ UNAVAILABLE_REASONS: Mapping[EvaluationCategory, str] = {
     EvaluationCategory.AMBIGUITY: (
         "needs LLM intake extraction, which is not wired into the harness yet"
     ),
-    EvaluationCategory.POLICY_AND_AUTHORIZATION: (
-        "needs the case workflow with approvals, which is not implemented yet"
-    ),
     EvaluationCategory.RESTART_RECOVERY: (
         "needs the case workflow checkpoints, which is not implemented yet"
     ),
@@ -181,6 +180,7 @@ def default_evaluators(
     impact_service: OperationalIntelligenceService,
     safety: ContentSafetyService,
     golden: GoldenFigures | None,
+    approval_policy: ApprovalPolicy | None = None,
 ) -> dict[EvaluationCategory, CaseEvaluator]:
     impact = ImpactEvaluator(impact_service, golden=golden)
     evaluators: dict[EvaluationCategory, CaseEvaluator] = {
@@ -190,4 +190,9 @@ def default_evaluators(
     }
     for category, reason in UNAVAILABLE_REASONS.items():
         evaluators[category] = UnavailableEvaluator(reason)
+    evaluators[EvaluationCategory.POLICY_AND_AUTHORIZATION] = (
+        PolicyEvaluator(impact_service, approval_policy)
+        if approval_policy is not None
+        else UnavailableEvaluator("needs the approval policy from support-data/config")
+    )
     return evaluators
