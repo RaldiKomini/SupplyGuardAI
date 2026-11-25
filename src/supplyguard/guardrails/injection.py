@@ -159,6 +159,20 @@ def sanitize(text: str) -> str:
     return "\n".join(clean_lines)
 
 
+# What happens to an instruction found by scan_text(): the text is NOT changed (it may be the
+# user's own message), but the instruction is reported and never obeyed. Documents are
+# different: scan_and_sanitize() removes the instruction before indexing.
+REPORTED_NOT_OBEYED = "reported and treated as data, never obeyed (the text itself was not changed)"
+
+
+def scan_text(text: str, source_id: str) -> list[ContentFinding]:
+    """Findings for text we do not store or rewrite, e.g. a user's message or a pasted notice."""
+    return [
+        f.model_copy(update={"action_taken": REPORTED_NOT_OBEYED})
+        for f in detect_injection(text, source_id)
+    ]
+
+
 def scan_and_sanitize(text: str, source_id: str) -> tuple[str, list[ContentFinding]]:
     """Convenience: findings are computed on the ORIGINAL text, sanitized text is what we keep."""
     findings = detect_injection(text, source_id)
