@@ -7,6 +7,7 @@ from types import SimpleNamespace
 import pytest
 
 from supplyguard.app import chainlit_app
+from supplyguard.app.case_service import CaseService
 from supplyguard.contracts import (
     ApprovalDecision,
     ApprovalRequest,
@@ -18,6 +19,7 @@ from supplyguard.contracts import (
     UIEvent,
     UIEventType,
 )
+from supplyguard.procurement.approvals import DecisionRecord, InMemoryApprovalRecords
 
 STALE_MESSAGE = "This approval request is no longer current. Review the latest request."
 
@@ -106,6 +108,7 @@ class _FakeService:
     ) -> None:
         self.decisions: list[ApprovalDecision] = []
         self.resumed: list[str] = []
+        self.follow_ups: list[tuple[str, str]] = []
         self._error = error
         self._repause = repause
         self._cases = cases
@@ -147,6 +150,12 @@ class _FakeService:
     ) -> AsyncIterator[UIEvent]:
         self.resumed.append(case_id)
         return _events(self._resume)
+
+    async def send_message(
+        self, case_id: str, message: str, authorization: AuthorizationContext
+    ) -> AsyncIterator[UIEvent]:
+        self.follow_ups.append((case_id, message))
+        return _events()
 
 
 @pytest.fixture
@@ -202,6 +211,17 @@ def test_approval_summary_lists_total_roles_and_actions() -> None:
     assert "Total cost: €1200.00" in summary
     assert "Required approver roles: procurement_manager, finance_controller" in summary
     assert "- expedite_order: €1200.00, expected 2026-05-01" in summary
+    assert "Purchase order: PO-1" in summary
+
+
+def test_approval_summary_distinguishes_equal_cost_actions() -> None:
+    original = _request()
+    changed = original.actions[0].model_copy(update={"payload": {"po_id": "PO-2", "qty": 20}})
+    summary = chainlit_app.approval_summary(original.model_copy(update={"actions": (changed,)}))
+
+    assert "Purchase order: PO-2" in summary
+    assert "Quantity: 20" in summary
+    assert summary != chainlit_app.approval_summary(original)
 
 
 def test_approval_summary_omits_a_missing_completion_date() -> None:
@@ -348,6 +368,31 @@ def test_review_of_an_unknown_request_is_reported(session, monkeypatch, sent) ->
     assert "That approval could not be opened" in sent[0].content
 
 
+def test_review_rechecks_a_request_closed_since_listing(session, monkeypatch, sent) -> None:
+    request = _request()
+    records = InMemoryApprovalRecords()
+    service = CaseService(SimpleNamespace(), records)
+    finance = _authorization("u-fc-01", "finance_controller")
+    session.set("authorization", finance)
+    session.set("pending_approval", None)
+    monkeypatch.setattr(chainlit_app, "_service", service)
+
+    async def scenario() -> None:
+        await records.save_request(request)
+        await chainlit_app.show_approvals(SimpleNamespace(payload={}))
+        await records.save_decision(
+            request.approval_request_id,
+            DecisionRecord("u-pm-01", "procurement_manager", "reject", request.requested_at),
+        )
+        await chainlit_app.review_approval(sent[0].actions[0])
+
+    asyncio.run(scenario())
+
+    assert sent[-1].actions == []
+    assert "This approval is closed" in sent[-1].content
+    assert session.get("pending_approval") is None
+
+
 def test_latest_waiting_approval_is_shown_again_after_reload(session, monkeypatch, sent) -> None:
     older = _case("case-0", CaseStatus.AWAITING_APPROVAL, datetime(2026, 4, 1, tzinfo=UTC))
     newer = _case("case-1", CaseStatus.AWAITING_APPROVAL, datetime(2026, 4, 2, tzinfo=UTC))
@@ -360,6 +405,11 @@ def test_latest_waiting_approval_is_shown_again_after_reload(session, monkeypatc
     assert fake.resumed == ["case-1"]
     assert [action.name for action in sent[0].actions] == ["approve_request", "reject_request"]
     assert session.get("pending_approval")["approval_request_id"] == "req-1"
+    assert session.get("case_id") == "case-1"
+
+    asyncio.run(chainlit_app.on_message(SimpleNamespace(content="Why was Helios rejected?")))
+
+    assert fake.follow_ups == [("case-1", "Why was Helios rejected?")]
 
 
 def test_reload_without_a_waiting_approval_shows_nothing(session, monkeypatch, sent) -> None:
@@ -371,3 +421,30 @@ def test_reload_without_a_waiting_approval_shows_nothing(session, monkeypatch, s
 
     assert fake.resumed == []
     assert sent == []
+
+
+def test_open_latest_case_can_show_completed_report(session, monkeypatch, sent) -> None:
+    done = _case("case-2", CaseStatus.COMPLETED, datetime(2026, 4, 3, tzinfo=UTC))
+    report = UIEvent(
+        case_id=done.case_id,
+        event_type=UIEventType.PROGRESS,
+        stage="resume",
+        message="Persisted incident report",
+        occurred_at=done.updated_at,
+    )
+    fake = _FakeService(cases=(done,), resume=report)
+    monkeypatch.setattr(chainlit_app, "_service", fake)
+
+    asyncio.run(chainlit_app.open_latest_case(SimpleNamespace(payload={})))
+
+    assert session.get("case_id") == done.case_id
+    assert session.get("pending_approval") is None
+    assert sent[-1].content == "Persisted incident report"
+
+
+def test_start_new_case_clears_the_restored_case(session, sent) -> None:
+    session.set("case_id", "case-1")
+    asyncio.run(chainlit_app.start_new_case(SimpleNamespace(payload={})))
+
+    assert session.get("case_id") is None
+    assert session.get("pending_approval") is None

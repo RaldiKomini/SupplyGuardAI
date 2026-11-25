@@ -1,6 +1,8 @@
 """Chainlit entry point: run with `chainlit run src/supplyguard/app/chainlit_app.py`."""
 
+import json
 import logging
+import re
 import uuid
 from collections.abc import AsyncIterator
 from contextlib import AsyncExitStack
@@ -29,6 +31,19 @@ _service: CaseService | None = None
 # Failures the user can fix by changing the request; they are shown in the chat.
 USER_ERRORS = (CaseNotFoundError, LookupError, PermissionError, RequestRejectedError, ValueError)
 logger = logging.getLogger(__name__)
+ACTION_FIELD_LABELS = {
+    "arrival_day": "Arrival day",
+    "component_id": "Component",
+    "days_gain": "Days gained",
+    "fee_pct": "Expedite fee (%)",
+    "from_location": "From",
+    "order_id": "Purchase order",
+    "po_id": "Purchase order",
+    "qty": "Quantity",
+    "supplier_id": "Supplier",
+    "to_location": "To",
+    "unit_price_eur": "Unit price (EUR)",
+}
 
 
 @cl.on_app_startup
@@ -85,7 +100,11 @@ async def start() -> None:
     await cl.Message(
         f"Signed in as {registry.display_name(context.user_id)} ({context.role}). "
         "Describe a supplier disruption to open a case.",
-        actions=[cl.Action(name="show_approvals", payload={}, label="Show my approvals")],
+        actions=[
+            cl.Action(name="show_approvals", payload={}, label="Show my approvals"),
+            cl.Action(name="open_latest_case", payload={}, label="Open latest case"),
+            cl.Action(name="start_new_case", payload={}, label="Start new case"),
+        ],
     ).send()
     await _restore_waiting_approval(context)
 
@@ -120,6 +139,31 @@ async def approve_request(action: cl.Action) -> None:
 @cl.action_callback("reject_request")
 async def reject_request(action: cl.Action) -> None:
     await _decide(action, approved=False)
+
+
+@cl.action_callback("start_new_case")
+async def start_new_case(action: cl.Action) -> None:
+    cl.user_session.set("case_id", None)
+    cl.user_session.set("pending_approval", None)
+    await cl.Message("Describe a supplier disruption to open a new case.").send()
+
+
+@cl.action_callback("open_latest_case")
+async def open_latest_case(action: cl.Action) -> None:
+    authorization: AuthorizationContext | None = cl.user_session.get("authorization")
+    if authorization is None or _service is None:
+        await cl.Message("The session is not ready. Please sign in again.").send()
+        return
+    try:
+        cases = await _service.list_cases(authorization)
+        if not cases:
+            await cl.Message("You have no cases yet. Describe a disruption to open one.").send()
+            return
+        latest = max(cases, key=lambda case: case.updated_at)
+        await _resume_owned_case(_service, latest.case_id, authorization)
+    except Exception:
+        logger.exception("Latest case could not be opened for %s", authorization.user_id)
+        await cl.Message("The case could not be opened. Please try again.").send()
 
 
 @cl.action_callback("show_approvals")
@@ -160,10 +204,18 @@ async def review_approval(action: cl.Action) -> None:
     request_id = str(action.payload.get("approval_request_id", ""))
     try:
         request = await _service.get_approval_request(request_id, authorization)
+        open_requests = await _service.list_open_approvals(authorization)
+        if not any(item.approval_request_id == request_id for item in open_requests):
+            await cl.Message(
+                "This approval is closed or is no longer waiting for your decision."
+            ).send()
+            return
+        await _prompt_approval(request, "Review this approval request.")
     except USER_ERRORS as error:
         await cl.Message(f"That approval could not be opened: {error}").send()
-        return
-    await _prompt_approval(request, "Review this approval request.")
+    except Exception:
+        logger.exception("Approval request %s could not be opened", request_id)
+        await cl.Message("The approval could not be opened. Please try again.").send()
 
 
 async def _decide(action: cl.Action, *, approved: bool) -> None:
@@ -209,16 +261,28 @@ def build_decision(
     )
 
 
+def _markdown_text(value: str) -> str:
+    return re.sub(r"([\\`*_{}\[\]()<>#!|~$])", r"\\\1", " ".join(value.splitlines()))
+
+
 def approval_summary(request: ApprovalRequest) -> str:
     lines = [
         f"Total cost: €{request.total_cost_eur}",
         f"Required approver roles: {', '.join(request.required_approver_roles)}",
+        f"Approval version: {request.payload_version}",
         "Actions:",
     ]
     for action in request.actions:
         line = f"- {action.action_type.value}: €{action.cost_eur}"
         if action.expected_completion_date is not None:
             line += f", expected {action.expected_completion_date}"
+        fields = []
+        for key, value in action.payload.items():
+            label = ACTION_FIELD_LABELS.get(key, key.replace("_", " ").capitalize())
+            display = value if isinstance(value, str) else json.dumps(value, default=str)
+            fields.append(f"{_markdown_text(label)}: {_markdown_text(display)}")
+        if fields:
+            line += " · " + " · ".join(fields)
         lines.append(line)
     return "\n".join(lines)
 
@@ -279,7 +343,16 @@ async def _restore_waiting_approval(authorization: AuthorizationContext) -> None
         if not waiting:
             return
         latest = max(waiting, key=lambda case: case.updated_at)
-        await _show(await _service.resume_case(latest.case_id, authorization))
+        await _resume_owned_case(_service, latest.case_id, authorization)
     except Exception:
         logger.exception("Waiting approvals could not be restored for %s", authorization.user_id)
         await cl.Message("Waiting approvals could not be loaded. Please reload the page.").send()
+
+
+async def _resume_owned_case(
+    service: CaseService, case_id: str, authorization: AuthorizationContext
+) -> None:
+    events = await service.resume_case(case_id, authorization)
+    cl.user_session.set("case_id", case_id)
+    cl.user_session.set("pending_approval", None)
+    await _show(events)
