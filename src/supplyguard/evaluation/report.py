@@ -26,7 +26,8 @@ class EvaluationReport(ContractModel):
     @property
     def overall_passed(self) -> bool:
         return (
-            not self.missing_case_ids
+            self.total_cases > 0
+            and not self.missing_case_ids
             and self.recorded_results == self.total_cases
             and all(summary.passed == summary.total for summary in self.categories)
         )

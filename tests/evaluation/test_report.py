@@ -2,7 +2,7 @@ import pytest
 
 from supplyguard.contracts.events import EvaluationResult, EvaluationStatus
 from supplyguard.evaluation.cases import EvaluationCase, EvaluationCategory
-from supplyguard.evaluation.report import build_report
+from supplyguard.evaluation.report import build_report, render_markdown
 
 
 def result(
@@ -29,6 +29,14 @@ def test_report_passes_only_when_every_case_passed() -> None:
     results = [result("A", EvaluationCategory.GOLDEN, EvaluationStatus.PASSED)]
 
     assert build_report(cases, results).overall_passed is True
+
+
+def test_empty_run_is_not_passed() -> None:
+    report = build_report([], [])
+
+    assert report.total_cases == 0
+    assert report.overall_passed is False
+    assert "Overall: **NOT PASSED** (0/0 results recorded)" in render_markdown(report)
 
 
 def test_report_rejects_results_for_unknown_or_duplicate_cases() -> None:
