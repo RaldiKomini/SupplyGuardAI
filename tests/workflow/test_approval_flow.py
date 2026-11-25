@@ -115,6 +115,9 @@ def test_modification_needs_a_new_approval(scripted_model, make_services) -> Non
     assert second["payload_version"] == 2
     assert second["payload_hash"] != first["payload_hash"]
     assert services.execution.writes == []  # the modification itself executed nothing
+    (modification,) = services.approval.recorded
+    assert modification.is_modification
+    assert modification.approval_request_id == first["approval_request_id"]
 
     result = decide(graph, second, approved=True)
     assert services.execution.writes == [LARGER_ORDER.payload]  # the modified quantity
@@ -192,9 +195,13 @@ def test_invalid_edit_returns_to_approval_with_the_reason(
     still = result["__interrupt__"][0].value["request"]
     assert still["payload_hash"] == first["payload_hash"]  # the current request still stands
     assert asyncio.run(graph.aget_state(CONFIG)).next == ("await_approval",)
+    assert services.approval.recorded == []  # a rejected edit must leave no stored modification
 
     result = decide(graph, still, approved=True)  # the user can still decide
     assert result["status"] == "completed"
+    (approval,) = services.approval.recorded
+    assert approval.approved
+    assert approval.approval_request_id == first["approval_request_id"]
     assert services.execution.writes == [
         {"supplier_id": "S004", "component_id": "MC-17", "qty": 3000}
     ]

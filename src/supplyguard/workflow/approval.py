@@ -56,24 +56,27 @@ def make_approval_steps(services: WorkflowServices) -> dict:
         except ValueError as error:  # e.g. the approvers do not cover the required roles
             return {
                 "decision_problem": str(error),
+                "revalidated_request": None,
                 "messages": [AIMessage(f"The decision was not accepted: {error}")],
+            }
+        if revised := state.get("revalidated_request"):
+            return {
+                "approval_request": revised,
+                "revalidated_request": None,
+                "decision": None,
             }
         return {"decision": recorded.model_dump(mode="json")}
 
     async def revalidate(state: CaseState) -> dict:
-        """A modification never counts as approval: it becomes a new request to decide on.
-
-        If the edit breaks a rule (e.g. more than the supplier's capacity), the current request
-        stays, the reason is shown, and the case returns to the approval pause.
-        """
+        """Prepare the revised request before recording a modification on the original."""
         try:
             new_request = await services.approval.revalidate(
                 _request(state), _decision(state).modified_actions
             )
         except ValueError as error:  # RevalidationError is a ValueError
             text = f"The change could not be accepted: {error}. The current request still stands."
-            return {"messages": [AIMessage(text)], "decision": None}
-        return {"approval_request": new_request.model_dump(mode="json"), "decision": None}
+            return {"messages": [AIMessage(text)], "decision": None, "revalidated_request": None}
+        return {"revalidated_request": new_request.model_dump(mode="json")}
 
     async def execute(state: CaseState) -> dict:
         try:
@@ -92,16 +95,19 @@ def make_approval_steps(services: WorkflowServices) -> dict:
 
 
 def route_after_await(state: CaseState) -> str:
-    return "await_approval" if state.get("decision_problem") else "record_decision"
+    if state.get("decision_problem"):
+        return "await_approval"
+    return "revalidate" if _decision(state).is_modification else "record_decision"
+
+
+def route_after_revalidation(state: CaseState) -> str:
+    return "record_decision" if state.get("revalidated_request") else "await_approval"
 
 
 def route_after_record(state: CaseState) -> str:
-    if state.get("decision_problem"):
+    if state.get("decision_problem") or state.get("decision") is None:
         return "await_approval"
-    decision = _decision(state)
-    if decision.is_modification:
-        return "revalidate"
-    return "execute" if decision.approved else "finish"
+    return "execute" if _decision(state).approved else "finish"
 
 
 def finish(state: CaseState) -> dict:
