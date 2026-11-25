@@ -21,9 +21,11 @@ class CaseState(TypedDict, total=False):
     clarification_rounds: int
     intelligence: dict | None  # OperationalIntelligenceResult (Raldi)
     evidence: dict | None  # EvidenceBundle (George)
+    investigation_findings: list[dict]  # InvestigationFinding from the Deep Agent
     plan: dict | None  # RecoveryPlan (Athanasia)
     approval_request: dict | None  # ApprovalRequest: the exact payload shown to the approver
     decision: dict | None  # the latest ApprovalDecision
     decision_problem: str | None  # why the latest decision was not accepted
     execution_results: list[dict] | None  # one ExecutionResult per action
+    report: str | None  # the incident report (markdown)
     errors: Annotated[list[str], operator.add]  # problems met on the way; new ones are appended

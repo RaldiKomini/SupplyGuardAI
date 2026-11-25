@@ -13,6 +13,7 @@ dependencies = [
   "asyncpg>=0.32.0",
   "chainlit>=2.0,<3",
   "chromadb>=1.5.9",
+  "deepagents>=0.7.41",
   "httpx>=0.28.1",
   "langchain>=1.5.2",
   "langchain-core>=1.8.4",
