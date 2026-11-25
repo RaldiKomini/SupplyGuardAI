@@ -109,4 +109,16 @@ def test_late_penalty_service_returns_trace() -> None:
     )
 
     assert trace.result == Decimal("40.00")
-    assert trace.inputs["capped_delay_weeks"] == 2
+    assert trace.inputs["delay_weeks"] == 2
+    assert trace.inputs["cap_percentage"] == 5
+
+
+def test_late_penalty_service_caps_the_charge_at_five_percent() -> None:
+    trace = DeterministicCostService().estimate_late_penalty(
+        LatePenaltyCostInput(
+            revenue_eur=Decimal("1000"), delay_days=15, weekly_rate_percentage=Decimal("2")
+        )
+    )
+
+    assert trace.inputs["delay_weeks"] == 3
+    assert trace.result == Decimal("50.00")

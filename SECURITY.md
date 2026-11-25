@@ -19,7 +19,7 @@ SupplyGuard AI handles synthetic project data, but its design must enforce produ
 ## Responsibility boundaries
 
 - George owns retrieved-content guardrails and red-team findings.
-- Elpida owns identity, sessions, roles, case access, and authorization context.
+- Elpiniki owns identity, sessions, roles, case access, and authorization context.
 - Athanasia owns transaction approval, policy validation, and idempotent procurement execution.
 - Elena owns user-bound case recovery and safe workflow resumption.
 - Raldi owns structured-data validation and deterministic numerical integrity.

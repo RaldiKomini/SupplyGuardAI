@@ -22,8 +22,8 @@ The reference scenario concerns a 12-day delay of component MC-17 from Atlas Com
 | Elena | Workflow, agent architecture, case memory, and reporting |
 | Raldi | Operational data, deterministic impact, Neo4j, and external-risk MCP |
 | George | Document intelligence, retrieval, provenance, and content guardrails |
-| Athanasia | Recovery planning, approval, and procurement MCP execution |
-| Elpiniki | Chainlit, identity, platform, LangSmith, evaluation, and delivery |
+| Athanasia | Recovery planning, approval, procurement MCP execution, and LangSmith tracing and experiment execution |
+| Elpiniki | Chainlit, identity, platform, evaluation, and delivery |
 
 The detailed non-overlapping responsibilities are defined in [COLLABORATION.md](COLLABORATION.md).
 

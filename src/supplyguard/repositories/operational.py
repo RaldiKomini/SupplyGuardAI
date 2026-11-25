@@ -5,7 +5,7 @@ from dataclasses import dataclass
 from datetime import date, timedelta
 from decimal import Decimal
 
-from sqlalchemy import Select, and_, func, or_, select
+from sqlalchemy import and_, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncConnection
 
 from supplyguard.contracts import DataQualityWarning, Severity, SourceReference
@@ -61,9 +61,10 @@ class CapabilityRow:
 
 
 @dataclass(frozen=True)
-class FactoryDemandRow:
+class WeeklyDemandRow:
     factory_id: str
-    daily_units: Decimal
+    week_start: date
+    component_units: int
 
 
 @dataclass(frozen=True)
@@ -112,41 +113,17 @@ class OperationalRepository:
         )
         return tuple((await self.connection.execute(statement)).scalars())
 
-    async def average_daily_component_demand(self, component_id: str, start_date: date) -> Decimal:
-        statement = (
-            select(
-                func.coalesce(
-                    func.sum(
-                        production_schedule.c.planned_units * bill_of_materials.c.qty_per_unit
-                    ),
-                    0,
-                ),
-                func.count(func.distinct(production_schedule.c.week_start)),
-            )
-            .select_from(
-                production_schedule.join(
-                    bill_of_materials,
-                    production_schedule.c.product_id == bill_of_materials.c.product_id,
-                )
-            )
-            .where(
-                and_(
-                    bill_of_materials.c.component_id == component_id,
-                    production_schedule.c.week_start >= start_date,
-                )
-            )
-        )
-        units, week_count = (await self.connection.execute(statement)).one()
-        return Decimal(units) / Decimal(max(1, week_count)) / Decimal(7)
-
-    async def daily_demand_by_factory(
-        self, component_id: str, start_date: date
-    ) -> tuple[FactoryDemandRow, ...]:
+    async def weekly_component_demand(
+        self, component_id: str, start_date: date, end_date: date
+    ) -> tuple[WeeklyDemandRow, ...]:
+        """Load weekly totals whose seven-day windows overlap [start_date, end_date)."""
+        if end_date <= start_date:
+            return ()
         statement = (
             select(
                 production_schedule.c.factory_id,
+                production_schedule.c.week_start,
                 func.sum(production_schedule.c.planned_units * bill_of_materials.c.qty_per_unit),
-                func.count(func.distinct(production_schedule.c.week_start)),
             )
             .select_from(
                 production_schedule.join(
@@ -155,19 +132,14 @@ class OperationalRepository:
                 )
             )
             .where(
-                and_(
-                    bill_of_materials.c.component_id == component_id,
-                    production_schedule.c.week_start >= start_date,
-                )
+                bill_of_materials.c.component_id == component_id,
+                production_schedule.c.week_start > start_date - timedelta(days=7),
+                production_schedule.c.week_start < end_date,
             )
-            .group_by(production_schedule.c.factory_id)
-            .order_by(production_schedule.c.factory_id)
+            .group_by(production_schedule.c.factory_id, production_schedule.c.week_start)
         )
-        result = await self.connection.execute(statement)
-        return tuple(
-            FactoryDemandRow(factory_id, Decimal(units) / Decimal(max(1, weeks)) / 7)
-            for factory_id, units, weeks in result.all()
-        )
+        rows = (await self.connection.execute(statement)).all()
+        return tuple(WeeklyDemandRow(*row) for row in rows)
 
     async def open_orders(
         self, product_ids: Sequence[str], scenario_date: date
@@ -220,20 +192,6 @@ class OperationalRepository:
         )
         result = await self.connection.execute(statement)
         return tuple(CapabilityRow(*row) for row in result.all())
-
-    async def days_until_next_delivery(
-        self, supplier_id: str, component_id: str, scenario_date: date
-    ) -> int:
-        statement: Select = select(func.min(purchase_orders.c.promised_date)).where(
-            and_(
-                purchase_orders.c.supplier_id == supplier_id,
-                purchase_orders.c.component_id == component_id,
-                purchase_orders.c.status.in_(("open", "confirmed", "in_transit")),
-                purchase_orders.c.promised_date >= scenario_date,
-            )
-        )
-        promised = (await self.connection.execute(statement)).scalar_one_or_none()
-        return max(0, (promised - scenario_date).days) if promised else 0
 
     async def open_purchase_orders(self, component_id: str) -> tuple[OpenPurchaseOrderRow, ...]:
         statement = (

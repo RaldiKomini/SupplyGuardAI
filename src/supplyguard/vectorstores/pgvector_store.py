@@ -5,7 +5,7 @@ Two separate tables (the assignment asks for separate collections):
   - evidence_incident_memories -> approved resolution summaries
 
 Connection: DATABASE_URL, e.g. postgresql://supplyguard:supplyguard@postgres:5432/supplyguard
-(the Postgres service itself is run by Elpida's docker-compose, using the
+(the Postgres service itself is run by Elpiniki's docker-compose, using the
 pgvector/pgvector image so the `vector` extension is available).
 
 Access scope, supplier and document type are filtered in the SQL WHERE clause,

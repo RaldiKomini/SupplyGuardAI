@@ -5,7 +5,7 @@ Usage:
     uv run python scripts/index_documents.py --backend pgvector     # needs DATABASE_URL
     uv run python scripts/index_documents.py --backend chroma   # CHROMA_HOST/PORT or CHROMA_PATH
 
-Elpida's docker-compose runs this once at setup, after PostgreSQL and Chroma are healthy.
+Elpiniki's docker-compose runs this once at setup, after PostgreSQL and Chroma are healthy.
 Safe to run twice: rows are upserted by chunk_id.
 """
 

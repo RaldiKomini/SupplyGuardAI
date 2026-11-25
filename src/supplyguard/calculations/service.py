@@ -1,8 +1,12 @@
 """Public deterministic cost service used by recovery planning."""
 
-from decimal import ROUND_CEILING, Decimal
+from decimal import Decimal
 
-from supplyguard.calculations.impact import estimate_late_penalty, expedite_cost
+from supplyguard.calculations.impact import (
+    LATE_PENALTY_CAP_PERCENTAGE,
+    estimate_late_penalty,
+    expedite_cost,
+)
 from supplyguard.contracts import (
     CalculationTrace,
     LatePenaltyCostInput,
@@ -55,25 +59,21 @@ class DeterministicCostService:
         )
 
     def estimate_late_penalty(self, cost_input: LatePenaltyCostInput) -> CalculationTrace:
-        weeks = min(
-            cost_input.cap_weeks,
-            int((Decimal(cost_input.delay_days) / 7).to_integral_value(rounding=ROUND_CEILING)),
-        )
+        # The legacy cap_weeks input remains accepted by the shared contract.
         cost = estimate_late_penalty(
             cost_input.revenue_eur,
             cost_input.delay_days,
             cost_input.weekly_rate_percentage,
-            cap_weeks=cost_input.cap_weeks,
         )
         return CalculationTrace(
             calculation="late_penalty_cost",
-            formula="revenue_eur * (weekly_rate_percentage / 100) * capped_delay_weeks",
+            formula="revenue_eur * min(weekly_rate_percentage * delay_weeks, cap_percentage) / 100",
             inputs={
                 "revenue_eur": cost_input.revenue_eur,
                 "delay_days": cost_input.delay_days,
                 "weekly_rate_percentage": cost_input.weekly_rate_percentage,
-                "cap_weeks": cost_input.cap_weeks,
-                "capped_delay_weeks": weeks,
+                "delay_weeks": (cost_input.delay_days + 6) // 7,
+                "cap_percentage": LATE_PENALTY_CAP_PERCENTAGE,
             },
             result=cost,
             unit="EUR",

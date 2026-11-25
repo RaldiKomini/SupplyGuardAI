@@ -98,6 +98,10 @@ async def _verify_pipeline(database_url, graph_url, username, password, monkeypa
     assert impact.total_usable_units == 3200
     assert impact.daily_demand_units == Decimal("450")
     assert impact.projected_shortfall_units == 5350
+    shortfall = next(c for c in impact.calculations if c.calculation == "projected_shortfall")
+    assert shortfall.inputs["window_days"] == 19
+    assert shortfall.inputs["demand_before_arrival"] == Decimal("8550")
+    assert shortfall.sources[-1].record_id == "PO-2026-9001"
     assert {row.location_id: row.usable for row in impact.inventory} == {
         "W-STU": 1300,
         "W-KAT": 600,
