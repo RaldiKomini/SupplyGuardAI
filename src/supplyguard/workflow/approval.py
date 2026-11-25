@@ -61,10 +61,18 @@ def make_approval_steps(services: WorkflowServices) -> dict:
         return {"decision": recorded.model_dump(mode="json")}
 
     async def revalidate(state: CaseState) -> dict:
-        """A modification never counts as approval: it becomes a new request to decide on."""
-        new_request = await services.approval.revalidate(
-            _request(state), _decision(state).modified_actions
-        )
+        """A modification never counts as approval: it becomes a new request to decide on.
+
+        If the edit breaks a rule (e.g. more than the supplier's capacity), the current request
+        stays, the reason is shown, and the case returns to the approval pause.
+        """
+        try:
+            new_request = await services.approval.revalidate(
+                _request(state), _decision(state).modified_actions
+            )
+        except ValueError as error:  # RevalidationError is a ValueError
+            text = f"The change could not be accepted: {error}. The current request still stands."
+            return {"messages": [AIMessage(text)], "decision": None}
         return {"approval_request": new_request.model_dump(mode="json"), "decision": None}
 
     async def execute(state: CaseState) -> dict:

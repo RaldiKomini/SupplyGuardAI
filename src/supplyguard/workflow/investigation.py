@@ -9,6 +9,7 @@ from supplyguard.contracts import (
     EvidenceBundle,
     OperationalIntelligenceResult,
     RecoveryPlan,
+    Severity,
 )
 from supplyguard.workflow.services import WorkflowServices
 from supplyguard.workflow.state import CaseState
@@ -58,9 +59,19 @@ def route_after_impact(state: CaseState) -> str:
     return "collect_evidence" if state.get("intelligence") else "stop_case"
 
 
+def blocking_warnings(state: CaseState) -> list[str]:
+    """Blocking data-quality warnings from the impact analysis, e.g. unconfirmed stock."""
+    if not state.get("intelligence"):
+        return []
+    result = OperationalIntelligenceResult.model_validate(state["intelligence"])
+    warnings = [*result.warnings, *result.impact.warnings, *result.dependencies.warnings]
+    messages = [w.message for w in warnings if w.severity == Severity.BLOCKING]
+    return list(dict.fromkeys(messages))  # the same warning may appear in two places
+
+
 def route_after_plan(state: CaseState) -> str:
-    if not state.get("plan"):
-        return "stop_case"
+    if not state.get("plan") or blocking_warnings(state):
+        return "stop_case"  # never ask for approval on unconfirmed numbers
     plan = RecoveryPlan.model_validate(state["plan"])
     if plan.recommended_option_id is None or plan.needs_revision:
         return "stop_case"
@@ -69,7 +80,7 @@ def route_after_plan(state: CaseState) -> str:
 
 def stop_case(state: CaseState) -> dict:
     """End the case without a recommendation and say why."""
-    reasons = list(state.get("errors") or [])
+    reasons = list(state.get("errors") or []) + blocking_warnings(state)
     if state.get("plan"):
         plan = RecoveryPlan.model_validate(state["plan"])
         reasons += [f.message for f in plan.challenge_findings if f.severity == "blocking"]

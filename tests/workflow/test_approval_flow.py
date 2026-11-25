@@ -168,3 +168,56 @@ def test_restart_while_waiting_keeps_the_same_payload_and_executes_once(
     decide(restarted, request, approved=True)
     assert len(services.execution.writes) == 1
     assert services.intelligence.calls == 1  # finished steps were not repeated
+
+
+def test_invalid_edit_returns_to_approval_with_the_reason(
+    scripted_model, make_services, capacity_limited_approval
+) -> None:
+    """Asking for more than Cordillera can supply must not leave the case stuck."""
+    services = make_services(approval=capacity_limited_approval)
+    graph = build_graph(
+        model=golden_model(scripted_model), services=services, checkpointer=InMemorySaver()
+    )
+    first = start(graph)
+    too_much = LARGER_ORDER.model_copy(update={"payload": {**LARGER_ORDER.payload, "qty": 9000}})
+
+    result = decide(
+        graph, first, approved=False, modified_actions=[too_much.model_dump(mode="json")]
+    )
+
+    assert (
+        "could not be accepted: Cordillera can supply at most 3000"
+        in result["messages"][-1].content
+    )
+    still = result["__interrupt__"][0].value["request"]
+    assert still["payload_hash"] == first["payload_hash"]  # the current request still stands
+    assert asyncio.run(graph.aget_state(CONFIG)).next == ("await_approval",)
+
+    result = decide(graph, still, approved=True)  # the user can still decide
+    assert result["status"] == "completed"
+    assert services.execution.writes == [
+        {"supplier_id": "S004", "component_id": "MC-17", "qty": 3000}
+    ]
+
+
+def test_unconfirmed_stock_stops_before_any_approval_request(
+    scripted_model, make_services, unconfirmed_stock
+) -> None:
+    services = make_services(intelligence=unconfirmed_stock)
+    graph = build_graph(
+        model=golden_model(scripted_model), services=services, checkpointer=InMemorySaver()
+    )
+    first = {
+        "case_id": "CASE-1",
+        "user_id": "u-pm-01",
+        "authorization": AUTHORIZATION,
+        "messages": [("user", "Atlas Components: 12-day delay on MC-17.")],
+    }
+
+    result = asyncio.run(graph.ainvoke(first, CONFIG))
+
+    assert "__interrupt__" not in result
+    assert result["status"] == "failed"
+    assert "Stock at W-KAT is inconsistent and was excluded" in result["messages"][-1].content
+    assert services.approval.requests_created == 0
+    assert services.execution.writes == []

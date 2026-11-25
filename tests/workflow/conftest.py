@@ -16,6 +16,7 @@ from supplyguard.contracts import (
     ApprovalRequest,
     ChallengeFinding,
     ComponentCandidate,
+    DataQualityWarning,
     DependencyReport,
     EvidenceBundle,
     ExecutionResult,
@@ -86,8 +87,9 @@ class ScriptedModel:
 class FakeIntelligence:
     """A few MC-17 reference numbers; counts calls to show a step is not repeated."""
 
-    def __init__(self) -> None:
+    def __init__(self, *, blocking_warning: str | None = None) -> None:
         self.calls = 0
+        self.blocking_warning = blocking_warning
 
     async def investigate(self, incident) -> OperationalIntelligenceResult:
         self.calls += 1
@@ -102,6 +104,17 @@ class FakeIntelligence:
             affected_factory_ids=("F1", "F2", "F3"),
             at_risk_orders=(),
             revenue_at_risk_eur=Decimal("0"),
+            warnings=(
+                (
+                    DataQualityWarning(
+                        issue_type="inventory_total_unconfirmed",
+                        message=self.blocking_warning,
+                        severity=Severity.BLOCKING,
+                    ),
+                )
+                if self.blocking_warning
+                else ()
+            ),
         )
         dependencies = DependencyReport(case_id=incident.case_id, findings=())
         return OperationalIntelligenceResult(impact=impact, dependencies=dependencies)
@@ -163,9 +176,13 @@ def _hash(actions) -> str:
 class FakeApproval:
     """Builds requests whose hash changes with the actions; records every decision."""
 
-    def __init__(self, *, refuse_with: str | None = None) -> None:
+    def __init__(
+        self, *, refuse_with: str | None = None, capacity_units: int | None = None
+    ) -> None:
         self.recorded = []
+        self.requests_created = 0
         self.refuse_with = refuse_with
+        self.capacity_units = capacity_units
 
     def _request(self, case_id, option_id, actions, version) -> ApprovalRequest:
         return ApprovalRequest(
@@ -182,6 +199,7 @@ class FakeApproval:
         )
 
     async def create_request(self, plan) -> ApprovalRequest:
+        self.requests_created += 1
         option = next(o for o in plan.options if o.option_id == plan.recommended_option_id)
         return self._request(plan.case_id, option.option_id, option.actions, 1)
 
@@ -192,6 +210,11 @@ class FakeApproval:
         return decision
 
     async def revalidate(self, request, modified_actions) -> ApprovalRequest:
+        too_many = [
+            a for a in modified_actions if a.payload.get("qty", 0) > (self.capacity_units or 10**9)
+        ]
+        if too_many:  # like the real RevalidationError, a ValueError
+            raise ValueError(f"Cordillera can supply at most {self.capacity_units} units per month")
         version = request.payload_version + 1
         return self._request(request.case_id, request.option_id, modified_actions, version)
 
@@ -256,6 +279,21 @@ def failing_service() -> FailingService:
 @pytest.fixture
 def blocked_planning() -> FakePlanning:
     return FakePlanning(blocking_finding="Fewer than three strategies were compared.")
+
+
+@pytest.fixture
+def capacity_limited_approval() -> FakeApproval:
+    return FakeApproval(capacity_units=3000)
+
+
+@pytest.fixture
+def unconfirmed_stock() -> FakeIntelligence:
+    return FakeIntelligence(
+        blocking_warning=(
+            "Stock at W-KAT is inconsistent and was excluded. "
+            "The stock total is a verified subtotal and shortfall is provisional."
+        )
+    )
 
 
 @pytest.fixture
