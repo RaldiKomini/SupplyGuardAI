@@ -40,8 +40,9 @@ the risk feed over MCP. From the confirmed incident it returned:
 - Delta's shared upstream dependency and the high-severity Taiwan wafer alert.
 
 These results reproduce the reference case and give the planner traceable inputs
-before any spending decision. Manual comparison time and realized savings remain
-unmeasured. The integration test covers the operational service after confirmation.
+before any spending decision. The measured system time for the whole case is in
+[time to a decision-ready plan](time-to-decision.md); manual comparison time and realized
+savings remain unmeasured. The integration test covers the operational service after confirmation.
 
 ## Attribution limits
 
