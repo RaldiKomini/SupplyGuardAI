@@ -4,6 +4,7 @@ from dataclasses import dataclass
 
 from supplyguard.contracts.protocols import (
     ApprovalService,
+    ContentSafetyService,
     EvidenceService,
     MasterDataService,
     OperationalIntelligenceService,
@@ -22,3 +23,4 @@ class WorkflowServices:
     approval: ApprovalService  # Athanasia: exact payload, decision rules, revalidation
     execution: ProcurementExecutionService  # Athanasia: idempotent procurement writes
     memory: ResolutionMemoryStore  # George: approved resolution summaries for future cases
+    content_safety: ContentSafetyService  # George: injection checks on the user's own messages

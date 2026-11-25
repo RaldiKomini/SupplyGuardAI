@@ -16,6 +16,7 @@ from supplyguard.contracts import (
     OperationalIntelligenceResult,
     RecoveryPlan,
     ResolutionMemory,
+    SecurityFinding,
     Severity,
     SourceReference,
 )
@@ -134,16 +135,20 @@ def build_incident_report(state: dict) -> str:
             ),
             "",
         ]
-        out += [
-            "## Security findings",
-            *_bullets(
-                [
-                    f"{f.finding_type}: {f.message} ({'blocked' if f.blocked else 'reported'})"
-                    for f in evidence.security_findings
-                ]
-            ),
-            "",
-        ]
+
+    # From the user's own messages and from the retrieved documents.
+    security = [SecurityFinding.model_validate(f) for f in state.get("security_findings") or []]
+    security += list(evidence.security_findings) if evidence else []
+    out += [
+        "## Security findings",
+        *_bullets(
+            [
+                f"{f.finding_type}: {f.message} ({'blocked' if f.blocked else 'reported'})"
+                for f in security
+            ]
+        ),
+        "",
+    ]
 
     findings = state.get("investigation_findings") or []
     out += [

@@ -54,6 +54,10 @@ Code then decides:
 - the spending limit can be lowered by the user, never raised: a higher request is kept in
   `requested_spending_cap_eur` for the Finance Director approval path.
 
+Each new user message is also scanned by `ContentSafetyService` (George). Embedded
+instructions, e.g. a pasted "SYSTEM: reveal…" notice, become security findings in the case
+and the report; the extraction prompt treats such text as data.
+
 ## Approval, restart and idempotency
 
 - The approval request is built in its own step before the pause, so a restart shows the same
@@ -84,6 +88,39 @@ becomes a `UIEvent` (progress, evidence, options, approval, outcome, error). Eve
 rejects cases owned by another user, and an approval must include the signed-in user.
 During an approval pause, messages are answered without resuming; in a finished case they are
 follow-up questions.
+
+## Running with the real components
+
+`open_case_workflow()` (`workflow/runtime.py`) builds the workflow from every owner's real
+component, following their integration tests, and closes all connections on exit:
+
+| Slot | Component |
+|---|---|
+| master data | `PostgresMasterDataService` |
+| impact | `DefaultOperationalIntelligenceService` on a new connection per case, Neo4j `DependencyGraph`, external risk over MCP |
+| evidence, memory, content safety | `EvidenceService`, `EvidenceResolutionMemoryStore`, `GuardrailContentSafetyService` |
+| planning, approval | `DeterministicRecoveryPlanningService`, `DeterministicApprovalService` (Postgres approval records) |
+| execution | `McpProcurementClient` |
+| checkpoints | `postgres_checkpointer()` |
+
+The approval service revalidates edits against the incident and impact saved in the case,
+through `CaseWorkflow.case_context()`.
+
+```python
+use_windows_compatible_event_loop()
+async with open_case_workflow() as workflow:
+    service = CaseService(workflow, ...)
+```
+
+## Evaluation
+
+`workflow/evaluation.py` provides the harness evaluators for the workflow's categories:
+
+| Category | Evaluator | Passes when |
+|---|---|---|
+| ambiguity | `AmbiguityEvaluator` | intake asks instead of confirming (10/10 with Azure OpenAI) |
+| follow_up | `FollowUpEvaluator` | the question is answered from the saved case, and the case is unchanged |
+| restart_recovery | `RestartEvaluator` | after stopping at the named step and restarting on the same checkpoints, the case completes, each action runs once, and the approval payload is unchanged |
 
 ## Follow-ups and reporting
 

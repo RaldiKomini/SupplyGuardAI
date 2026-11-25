@@ -28,4 +28,5 @@ class CaseState(TypedDict, total=False):
     decision_problem: str | None  # why the latest decision was not accepted
     execution_results: list[dict] | None  # one ExecutionResult per action
     report: str | None  # the incident report (markdown)
+    security_findings: Annotated[list[dict], operator.add]  # from the user's messages
     errors: Annotated[list[str], operator.add]  # problems met on the way; new ones are appended
