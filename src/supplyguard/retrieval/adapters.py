@@ -18,7 +18,7 @@ from supplyguard.contracts import AuthorizationContext, SecurityFinding
 from supplyguard.contracts.memory import ResolutionMemory
 from supplyguard.guardrails.injection import scan_text
 from supplyguard.guardrails.metadata import SAFE_IDENTIFIER
-from supplyguard.retrieval.contract_mapping import to_security_finding
+from supplyguard.retrieval.contract_mapping import to_security_findings
 from supplyguard.retrieval.ingestion import parse_memory_chunk
 from supplyguard.retrieval.service import EvidenceService
 
@@ -35,7 +35,7 @@ class GuardrailContentSafetyService:
         # source_id may come from the user; it is shown in finding messages, so it must
         # be a plain identifier (an attack hidden in it would otherwise reach a prompt).
         safe_id = source_id if SAFE_IDENTIFIER.match(source_id or "") else "untrusted_input"
-        return tuple(to_security_finding(f, None) for f in scan_text(text, safe_id))
+        return to_security_findings(scan_text(text, safe_id))
 
 
 class EvidenceResolutionMemoryStore:

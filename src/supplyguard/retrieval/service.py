@@ -39,7 +39,7 @@ from supplyguard.retrieval.conflicts import extract_facts, resolve
 from supplyguard.retrieval.contract_mapping import (
     to_evidence_conflict,
     to_evidence_item,
-    to_security_finding,
+    to_security_findings,
 )
 from supplyguard.retrieval.hybrid import Retriever
 from supplyguard.retrieval.ingestion import (
@@ -226,14 +226,25 @@ class EvidenceService:
     ) -> EvidenceBundle:
         scopes = scopes_from(authorization)
         suppliers = [incident.supplier_id]
-        alternatives = alternative_supplier_ids or self.suppliers_mentioning(incident.component_id)
+        alternatives = (
+            self.suppliers_mentioning(incident.component_id)
+            if alternative_supplier_ids is None
+            else alternative_supplier_ids
+        )
         suppliers += [s for s in alternatives if s != incident.supplier_id]
 
         query = (
             f"{incident.supplier_id} {incident.component_id} delay lead time capacity "
             "expedite certification"
         )
-        documents = self.search(query, scopes, k=10)
+        # Search only inside the documents of the incident supplier and its alternatives.
+        # An unfiltered search pulls in unrelated contracts, because every contract template
+        # mentions "reference component MC-17". General rules come from the procedures.
+        documents = [
+            e
+            for sid in suppliers
+            for e in self.search(query, scopes, k=4, supplier_id=sid).evidence
+        ]
         procedures = self.search(
             "source precedence qualification expedite shared upstream usable stock approval",
             scopes,
@@ -245,7 +256,7 @@ class EvidenceService:
         # the alternatives (contracts, qualification records, notices, e-mails). That way each
         # conflict's selected/conflicting evidence ids point to an item in the bundle, and a
         # document cannot be missed because it ranked low. Scope filtering happens in _to_bundle.
-        evidence: list[Evidence] = list(documents.evidence) + list(procedures.evidence)
+        evidence: list[Evidence] = documents + list(procedures.evidence)
         conflicts: list[Conflict] = []
         supplier_chunks: list[DocumentChunk] = []
         for sid in suppliers:
@@ -376,7 +387,7 @@ class EvidenceService:
     def scan_untrusted_text(self, text: str, source_id: str = "user_attachment"):
         """For content that does not come from our index, e.g. a notice pasted into chat.
         Returns shared-contract SecurityFindings."""
-        return tuple(to_security_finding(f, None) for f in scan_text(text, source_id))
+        return to_security_findings(scan_text(text, source_id))
 
     # ============================================================ private helpers
     def _add_memory_chunks(self, chunks: list[DocumentChunk]) -> None:
@@ -413,11 +424,7 @@ class EvidenceService:
             findings = self._findings_for(sources)
         citations = {e.chunk.citation.source_id: e.chunk.citation for e in evidence}
         citations |= {c.citation.source_id: c.citation for c in cited_chunks}
-        findings = [
-            to_security_finding(f, citations.get(f.source_id))
-            for f in findings
-            if f.source_id in sources
-        ]
+        findings = to_security_findings([f for f in findings if f.source_id in sources], citations)
         return EvidenceBundle(
             case_id=case_id,
             query=query,
