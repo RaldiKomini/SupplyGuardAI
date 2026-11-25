@@ -22,6 +22,7 @@ from supplyguard.approval.policy import load_approval_policy
 from supplyguard.approval.service import DeterministicApprovalService
 from supplyguard.calculations.service import DeterministicCostService
 from supplyguard.contracts import ConfirmedIncident, OperationalIntelligenceResult
+from supplyguard.contracts.protocols import ApprovalRequestSource
 from supplyguard.data.database import Database
 from supplyguard.external_risk.mcp_client import McpRiskClient
 from supplyguard.external_risk.service import ExternalRiskService
@@ -60,6 +61,16 @@ class ConnectionPerCallIntelligence:
                 OperationalRepository(connection), self._graph, self._risk, self._costs
             )
             return await service.investigate(incident)
+
+
+@asynccontextmanager
+async def open_approval_source() -> AsyncIterator[ApprovalRequestSource]:
+    """The approval records CaseService reads, on the same database the workflow writes to."""
+    database = Database(os.environ["DATABASE_URL"])
+    try:
+        yield PostgresApprovalRecords(database)
+    finally:
+        await database.close()
 
 
 @asynccontextmanager

@@ -97,6 +97,21 @@ class CaseService:
             raise CaseNotFoundError(approval_request_id)
         return request
 
+    async def list_open_approvals(
+        self, authorization: AuthorizationContext
+    ) -> tuple[ApprovalRequest, ...]:
+        """Requests waiting on this user's role that this user has not decided yet."""
+        if self._approvals is None:
+            return ()
+        return await self._approvals.list_open_for(authorization.role, authorization.user_id)
+
+    async def has_decided(
+        self, approval_request_id: str, authorization: AuthorizationContext
+    ) -> bool:
+        if self._approvals is None:
+            return False
+        return await self._approvals.has_decided(approval_request_id, authorization.user_id)
+
     async def _find_request(self, approval_request_id: str) -> ApprovalRequest | None:
         if self._approvals is None:
             return None

@@ -9,7 +9,7 @@ from dataclasses import dataclass
 from datetime import datetime
 from typing import Protocol
 
-from sqlalchemy import func, insert, select
+from sqlalchemy import any_, func, insert, literal, select
 from sqlalchemy.exc import IntegrityError
 
 from supplyguard.contracts import ApprovalDecision, ApprovalRequest, RecoveryAction
@@ -73,6 +73,23 @@ def decision_from_records(
     )
 
 
+def is_open_for(
+    request: ApprovalRequest,
+    records: Sequence[DecisionRecord],
+    latest_version: int,
+    user_id: str,
+) -> bool:
+    """Open means still waiting: latest version, no rejection or edit, not fully approved,
+    and this user has not decided. Both stores use this rule so they cannot disagree."""
+    if request.payload_version != latest_version:
+        return False
+    if any(r.decision != APPROVE for r in records):
+        return False
+    if any(r.user_id == user_id for r in records):
+        return False
+    return not decision_from_records(request, records).approved
+
+
 class InMemoryApprovalRecords:
     """Approval records for tests and the offline demo."""
 
@@ -111,6 +128,20 @@ class InMemoryApprovalRecords:
     async def latest_version(self, case_id: str) -> int:
         versions = [r.payload_version for r in self.requests.values() if r.case_id == case_id]
         return max(versions, default=0)
+
+    async def list_open_for(self, role: str, user_id: str) -> tuple[ApprovalRequest, ...]:
+        open_requests = []
+        for approval_request_id, request in self.requests.items():
+            if role not in request.required_approver_roles:
+                continue
+            records = self.decisions.get(approval_request_id, [])
+            latest = await self.latest_version(request.case_id)
+            if is_open_for(request, records, latest, user_id):
+                open_requests.append(request)
+        return tuple(open_requests)
+
+    async def has_decided(self, approval_request_id: str, user_id: str) -> bool:
+        return any(r.user_id == user_id for r in self.decisions.get(approval_request_id, []))
 
     async def load(
         self, approval_request_id: str
@@ -198,6 +229,15 @@ class PostgresApprovalRecords:
     async def load(
         self, approval_request_id: str
     ) -> tuple[ApprovalRequest, ApprovalDecision] | None:
+        saved = await self._load_with_records(approval_request_id)
+        if saved is None:
+            return None
+        request, records = saved
+        return request, decision_from_records(request, records)
+
+    async def _load_with_records(
+        self, approval_request_id: str
+    ) -> tuple[ApprovalRequest, list[DecisionRecord]] | None:
         async with self.database.connection() as connection:
             row = (
                 (
@@ -235,7 +275,41 @@ class PostgresApprovalRecords:
             evidence_source_ids=tuple(row["evidence_source_ids"]),
             requested_at=row["requested_at"],
         )
-        return request, decision_from_records(request, records)
+        return request, records
+
+    async def list_open_for(self, role: str, user_id: str) -> tuple[ApprovalRequest, ...]:
+        async with self.database.connection() as connection:
+            candidate_ids = (
+                (
+                    await connection.execute(
+                        select(approval_requests.c.approval_request_id).where(
+                            literal(role) == any_(approval_requests.c.required_roles)
+                        )
+                    )
+                )
+                .scalars()
+                .all()
+            )
+        open_requests = []
+        for approval_request_id in candidate_ids:
+            saved = await self._load_with_records(approval_request_id)
+            if saved is None:
+                continue
+            request, records = saved
+            latest = await self.latest_version(request.case_id)
+            if is_open_for(request, records, latest, user_id):
+                open_requests.append(request)
+        return tuple(open_requests)
+
+    async def has_decided(self, approval_request_id: str, user_id: str) -> bool:
+        async with self.database.connection() as connection:
+            found = await connection.scalar(
+                select(approval_decisions.c.user_id).where(
+                    approval_decisions.c.approval_request_id == approval_request_id,
+                    approval_decisions.c.user_id == user_id,
+                )
+            )
+        return found is not None
 
 
 def _decision_insert(approval_request_id: str, record: DecisionRecord, comment: str | None = None):
