@@ -8,11 +8,12 @@ from decimal import Decimal
 from pathlib import Path
 
 from supplyguard.approval.policy import ApprovalPolicy
+from supplyguard.contracts.application import AuthorizationContext
 from supplyguard.contracts.events import EvaluationResult, EvaluationStatus
 from supplyguard.contracts.incident import ConfirmedIncident
 from supplyguard.contracts.protocols import ContentSafetyService, OperationalIntelligenceService
 from supplyguard.evaluation.cases import EvaluationCase, EvaluationCategory
-from supplyguard.evaluation.policy import PolicyEvaluator
+from supplyguard.evaluation.policy import EvidenceSearch, PolicyEvaluator
 from supplyguard.evaluation.runner import CaseEvaluator, UnavailableEvaluator
 
 EVALUATION_USER_ID = "evaluation-harness"
@@ -181,6 +182,8 @@ def default_evaluators(
     safety: ContentSafetyService,
     golden: GoldenFigures | None,
     approval_policy: ApprovalPolicy | None = None,
+    evidence: EvidenceSearch | None = None,
+    authorizations: Mapping[str, AuthorizationContext] | None = None,
 ) -> dict[EvaluationCategory, CaseEvaluator]:
     impact = ImpactEvaluator(impact_service, golden=golden)
     evaluators: dict[EvaluationCategory, CaseEvaluator] = {
@@ -191,7 +194,9 @@ def default_evaluators(
     for category, reason in UNAVAILABLE_REASONS.items():
         evaluators[category] = UnavailableEvaluator(reason)
     evaluators[EvaluationCategory.POLICY_AND_AUTHORIZATION] = (
-        PolicyEvaluator(impact_service, approval_policy)
+        PolicyEvaluator(
+            impact_service, approval_policy, evidence=evidence, authorizations=authorizations
+        )
         if approval_policy is not None
         else UnavailableEvaluator("needs the approval policy from support-data/config")
     )

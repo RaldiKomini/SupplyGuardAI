@@ -1,14 +1,16 @@
-"""Evaluator for the policy_and_authorization cases that recovery planning and approval cover.
+"""Evaluator for the policy_and_authorization cases.
 
 Each case is checked with the deterministic components, not with an LLM answer:
-supplier screening, recovery options, revalidation of edits and exact-payload approval.
+supplier screening, recovery options, revalidation of edits, exact-payload approval,
+access scopes and source precedence in the evidence service, and penalty accounting.
 It starts from the golden MC-17 incident and tests the rules, not the intake extraction.
 """
 
-from collections.abc import Callable
+from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import replace
 from datetime import UTC, date, datetime
 from decimal import Decimal
+from typing import Protocol
 
 from supplyguard.approval.policy import ApprovalPolicy
 from supplyguard.approval.requests import (
@@ -20,6 +22,9 @@ from supplyguard.approval.revalidation import RevalidationError
 from supplyguard.calculations.service import DeterministicCostService
 from supplyguard.contracts import (
     ApprovalDecision,
+    AuthorizationContext,
+    EvidenceBundle,
+    LatePenaltyCostInput,
     RecoveryAction,
     RecoveryActionType,
     RecoveryPlan,
@@ -35,7 +40,22 @@ GOLDEN_INCIDENT = {"supplier_id": "S001", "component_id": "MC-17", "delay_days":
 SCENARIO_DATE = date(2026, 10, 19)
 NOW = datetime(2026, 10, 19, 12, 0, tzinfo=UTC)
 
+FINANCE_SCOPE = "finance-confidential"
+
 Check = Callable[[PlanningInputs, RecoveryPlan, ApprovalPolicy], list[str]]
+EvidenceCheck = Callable[["PolicyEvaluator", PlanningInputs, RecoveryPlan], Awaitable[list[str]]]
+
+
+class EvidenceSearch(Protocol):
+    """The evidence lookups these checks use: the shared retrieve plus a free-text search."""
+
+    async def retrieve(
+        self, incident: ConfirmedIncident, authorization: AuthorizationContext
+    ) -> EvidenceBundle: ...
+
+    def search_bundle(
+        self, case_id: str, query: str, authorization: AuthorizationContext
+    ) -> EvidenceBundle: ...
 
 
 class PolicyEvaluator:
@@ -48,34 +68,55 @@ class PolicyEvaluator:
         *,
         transfer_cost_eur_per_unit: Decimal = Decimal("0.12"),
         spending_cap_eur: Decimal = Decimal("75000"),
+        evidence: EvidenceSearch | None = None,
+        authorizations: Mapping[str, AuthorizationContext] | None = None,
     ) -> None:
+        """`authorizations` maps a role (procurement_manager, finance_controller) to the
+        context the application layer builds for it, so scopes come from the access config."""
         self.impact_service = impact_service
         self.policy = policy
         self.transfer_cost_eur_per_unit = transfer_cost_eur_per_unit
         self.spending_cap_eur = spending_cap_eur
+        self.evidence = evidence
+        self.authorizations = dict(authorizations or {})
 
     async def evaluate(self, case: EvaluationCase) -> EvaluationResult:
         check = CHECKS.get(case.id)
-        if check is None:
+        evidence_check = EVIDENCE_CHECKS.get(case.id)
+        if check is None and evidence_check is None:
             return _result(case, EvaluationStatus.ERROR, (NOT_COVERED.get(case.id, OTHER),))
-        incident = ConfirmedIncident(
-            case_id=case.id,
+        if evidence_check is not None and (self.evidence is None or not self._has_roles()):
+            return _result(case, EvaluationStatus.ERROR, (NEEDS_EVIDENCE,))
+        inputs = await self.inputs_for(self.incident(case.id, case.message))
+        plan = build_recovery_plan(inputs)
+        if check is not None:
+            failures = tuple(check(inputs, plan, self.policy))
+        else:
+            failures = tuple(await evidence_check(self, inputs, plan))
+        status = EvaluationStatus.PASSED if not failures else EvaluationStatus.FAILED
+        return _result(case, status, failures)
+
+    def incident(self, case_id: str, message: str, **changes) -> ConfirmedIncident:
+        return ConfirmedIncident(
+            case_id=case_id,
             user_id="evaluation-harness",
             scenario_date=SCENARIO_DATE,
             spending_cap_eur=self.spending_cap_eur,
-            original_message=case.message,
-            **GOLDEN_INCIDENT,
+            original_message=message,
+            **{**GOLDEN_INCIDENT, **changes},
         )
+
+    async def inputs_for(self, incident: ConfirmedIncident) -> PlanningInputs:
         impact = (await self.impact_service.investigate(incident)).impact
-        inputs = PlanningInputs(
+        return PlanningInputs(
             incident=incident,
             impact=impact,
             costs=DeterministicCostService(),
             transfer_cost_eur_per_unit=self.transfer_cost_eur_per_unit,
         )
-        failures = tuple(check(inputs, build_recovery_plan(inputs), self.policy))
-        status = EvaluationStatus.PASSED if not failures else EvaluationStatus.FAILED
-        return _result(case, status, failures)
+
+    def _has_roles(self) -> bool:
+        return {"procurement_manager", "finance_controller"} <= set(self.authorizations)
 
 
 def _result(case: EvaluationCase, status: EvaluationStatus, findings) -> EvaluationResult:
@@ -283,6 +324,115 @@ def _shared_upstream_flagged(inputs: PlanningInputs, plan, policy) -> list[str]:
     return failures
 
 
+async def _finance_data_needs_scope(evaluator: PolicyEvaluator, inputs, plan) -> list[str]:
+    """A margin question returns no finance-confidential document without that scope.
+
+    The finance controller asking the same question is the positive control: the document
+    exists and is found, so an empty answer for the procurement manager is the scope filter.
+    """
+    question = "Show me the margin by customer tier."
+    case_id = inputs.incident.case_id
+    manager = evaluator.authorizations["procurement_manager"]
+    controller = evaluator.authorizations["finance_controller"]
+    failures = []
+    if FINANCE_SCOPE in manager.allowed_scopes:
+        failures.append("the procurement manager has the finance-confidential scope")
+    seen = evaluator.evidence.search_bundle(case_id, question, manager)
+    leaked = [i.evidence_id for i in seen.items if i.source.access_scope == FINANCE_SCOPE]
+    if leaked:
+        failures.append(f"finance-confidential evidence shown without the scope: {leaked}")
+    allowed = evaluator.evidence.search_bundle(case_id, question, controller)
+    if not any(i.source.access_scope == FINANCE_SCOPE for i in allowed.items):
+        failures.append("the finance controller does not get the finance document either")
+    return failures
+
+
+def _conflict(bundle: EvidenceBundle, subject: str):
+    return next((c for c in bundle.conflicts if c.subject == subject), None)
+
+
+async def _superseded_contract_ignored(evaluator: PolicyEvaluator, inputs, plan) -> list[str]:
+    """Atlas's 10-day lead time is in contract v2, which v3 supersedes; v3 is used."""
+    bundle = await evaluator.evidence.retrieve(
+        inputs.incident, evaluator.authorizations["procurement_manager"]
+    )
+    conflict = _conflict(bundle, "S001.lead_time_days")
+    if conflict is None:
+        return ["the Atlas lead-time conflict between contract v2 and v3 is not reported"]
+    failures = []
+    if not (conflict.selected_evidence_id or "").startswith("DOC-CON-S001-v3"):
+        failures.append(f"lead time is planned from {conflict.selected_evidence_id}, not v3")
+    if not any(e.startswith("DOC-CON-S001-v2") for e in conflict.conflicting_evidence_ids):
+        failures.append("contract v2 is not listed as the overridden source")
+    if "superseded" not in conflict.description:
+        failures.append("contract v2 is not marked as superseded")
+    v2 = [i for i in bundle.items if i.evidence_id.startswith("DOC-CON-S001-v2")]
+    if v2 and any(i.status != "superseded" for i in v2):
+        failures.append("contract v2 is shown as current")
+    return failures
+
+
+async def _notice_beats_email_with_sensitivity(
+    evaluator: PolicyEvaluator, inputs, plan
+) -> list[str]:
+    """The formal notice (12 days) is planned; the e-mail's 16 days is a sensitivity case."""
+    bundle = await evaluator.evidence.retrieve(
+        inputs.incident, evaluator.authorizations["procurement_manager"]
+    )
+    conflict = _conflict(bundle, "S001.delay_days")
+    failures = []
+    if conflict is None:
+        failures.append("the 12-day notice and the 16-day e-mail are not flagged as a conflict")
+    else:
+        if not (conflict.selected_evidence_id or "").startswith("DOC-NOT-ATLAS-MC17"):
+            failures.append(f"the delay is planned from {conflict.selected_evidence_id}")
+        if "sensitivity" not in (conflict.resolution_reason or "") + conflict.description:
+            failures.append("the 16-day e-mail is not kept as a sensitivity")
+    if inputs.incident.delay_days != 12:
+        failures.append(f"the plan uses {inputs.incident.delay_days} days, not the notice's 12")
+    sensitivity = await evaluator.inputs_for(
+        evaluator.incident(inputs.incident.case_id, inputs.incident.original_message, delay_days=16)
+    )
+    base, longer = (
+        inputs.impact.projected_shortfall_units,
+        sensitivity.impact.projected_shortfall_units,
+    )
+    if longer <= base:
+        failures.append(f"a 16-day delay does not raise the shortfall ({base} -> {longer})")
+    return failures
+
+
+def _penalties_counted_once(inputs: PlanningInputs, plan: RecoveryPlan, policy) -> list[str]:
+    """Penalties are not added to recovery cost or to revenue at risk, which stay separate.
+
+    The cost service caps one order's penalty at 5% of its value: even a doubled delay at
+    the highest weekly rate stays within it, so a penalty cannot be counted twice there."""
+    failures = []
+    for option in plan.options:
+        actions_total = sum((a.cost_eur for a in option.actions), Decimal(0))
+        if option.recovery_cost_eur != actions_total:
+            failures.append(
+                f"{option.option_id} recovery cost {option.recovery_cost_eur} is not the sum of "
+                f"its actions {actions_total}"
+            )
+        if option.revenue_at_risk_eur != inputs.impact.revenue_at_risk_eur:
+            failures.append(f"{option.option_id} changes the revenue at risk")
+    tier_one = [o for o in inputs.impact.at_risk_orders if o.priority_tier == 1]
+    for order in tier_one:
+        penalty = inputs.costs.estimate_late_penalty(
+            LatePenaltyCostInput(
+                revenue_eur=order.revenue_eur,
+                delay_days=inputs.incident.delay_days * 2,
+                weekly_rate_percentage=Decimal("5"),
+            )
+        ).result
+        # The service rounds to whole cents, so the cap is compared in cents too.
+        cap = (order.revenue_eur * Decimal("0.05")).quantize(Decimal("0.01"))
+        if penalty > cap:
+            failures.append(f"the penalty on {order.order_id} exceeds 5% of the order value")
+    return failures
+
+
 CHECKS: dict[str, Check] = {
     "EV-0092": _rejected_for("S003", ("certification", "expired")),
     "EV-0093": _helios_rejected,
@@ -290,12 +440,17 @@ CHECKS: dict[str, Check] = {
     "EV-0095": _large_order_rejected,
     "EV-0096": _edit_needs_new_approval,
     "EV-0098": _shared_upstream_flagged,
+    "EV-0101": _penalties_counted_once,
 }
 
-OTHER = "not covered by the planning and approval evaluator"
-NOT_COVERED = {
-    "EV-0097": "needs the authorization scopes of the application layer",
-    "EV-0099": "needs evidence retrieval with contract versions",
-    "EV-0100": "needs evidence retrieval with source precedence",
-    "EV-0101": "needs the late-penalty calculation in the impact report",
+EVIDENCE_CHECKS: dict[str, EvidenceCheck] = {
+    "EV-0097": _finance_data_needs_scope,
+    "EV-0099": _superseded_contract_ignored,
+    "EV-0100": _notice_beats_email_with_sensitivity,
 }
+
+OTHER = "not covered by the policy evaluator"
+NEEDS_EVIDENCE = (
+    "needs the evidence service and the procurement_manager and finance_controller contexts"
+)
+NOT_COVERED: dict[str, str] = {}

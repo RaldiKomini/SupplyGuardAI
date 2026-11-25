@@ -162,8 +162,23 @@ async def run_experiment(
     return experiment, ordered
 
 
+EVIDENCE_ROLES = {"procurement_manager": "u-pm-01", "finance_controller": "u-fc-01"}
+
+
+def approver_contexts(registry) -> dict[str, Any]:
+    """The application layer's context for one demo user per role, so scopes come from
+    config/access.toml and are never invented here."""
+    contexts = {}
+    for role, user_id in EVIDENCE_ROLES.items():
+        context = registry.authorization_for(user_id)
+        if context is not None and context.role == role:
+            contexts[role] = context
+    return contexts
+
+
 async def _main(experiment_prefix: str, dataset_name: str) -> int:
     from supplyguard.approval.policy import load_approval_policy
+    from supplyguard.auth import get_registry
     from supplyguard.calculations.service import DeterministicCostService
     from supplyguard.data.database import Database
     from supplyguard.evaluation.evaluators import default_evaluators, load_golden_figures
@@ -171,6 +186,7 @@ async def _main(experiment_prefix: str, dataset_name: str) -> int:
     from supplyguard.external_risk.service import ExternalRiskService
     from supplyguard.graph.client import DependencyGraph
     from supplyguard.retrieval.adapters import GuardrailContentSafetyService
+    from supplyguard.retrieval.service import EvidenceService
     from supplyguard.workflow.runtime import ConnectionPerCallIntelligence
     from supplyguard.workflow.settings import DATA_DIR
 
@@ -196,6 +212,8 @@ async def _main(experiment_prefix: str, dataset_name: str) -> int:
                 GuardrailContentSafetyService(),
                 load_golden_figures(DATA_DIR / "evaluation" / "golden_scenario.json"),
                 load_approval_policy(DATA_DIR / "config" / "policies.json"),
+                evidence=EvidenceService.from_support_data(DATA_DIR, backend="memory"),
+                authorizations=approver_contexts(get_registry()),
             )
         )
         experiment, results = await run_experiment(
