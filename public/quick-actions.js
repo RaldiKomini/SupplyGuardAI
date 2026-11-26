@@ -5,6 +5,14 @@
         ["start_new_case", "Start new case"],
     ];
 
+    // Chainlit forwards window messages to the chat socket. Keep app shortcuts local.
+    window.addEventListener("message", (event) => {
+        const isShortcut = typeof event.data === "string" && event.data.startsWith("supplyguard:");
+        if (isShortcut && (event.source !== window || event.origin !== window.location.origin)) {
+            event.stopImmediatePropagation();
+        }
+    }, true);
+
     function mountQuickActions() {
         const composer = document.getElementById("message-composer");
         if (!composer || composer.querySelector("#supplyguard-quick-actions")) {

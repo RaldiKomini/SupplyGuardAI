@@ -494,6 +494,42 @@ def test_persistent_shortcut_routes_to_the_existing_action(name, session, monkey
     assert calls == [name]
 
 
+def test_shortcut_cannot_switch_cases_while_a_case_is_responding(
+    session, monkeypatch, sent
+) -> None:
+    session.set("case_id", "case-1")
+    started = asyncio.Event()
+    finish = asyncio.Event()
+
+    class SlowService(_FakeService):
+        async def send_message(self, case_id, message, authorization):
+            async def incoming():
+                started.set()
+                await finish.wait()
+                yield _approval_event()
+
+            return incoming()
+
+    monkeypatch.setattr(chainlit_app, "_service", SlowService())
+
+    async def exercise():
+        running_case = asyncio.create_task(
+            chainlit_app.on_message(SimpleNamespace(content="Show the impact."))
+        )
+        await started.wait()
+        try:
+            await chainlit_app.quick_action("supplyguard:start_new_case")
+            assert session.get("case_id") == "case-1"
+            assert "current case action" in sent[-1].content
+        finally:
+            finish.set()
+            await running_case
+        await chainlit_app.quick_action("supplyguard:start_new_case")
+        assert session.get("case_id") is None
+
+    asyncio.run(exercise())
+
+
 def test_start_new_case_clears_the_restored_case(session, sent) -> None:
     session.set("case_id", "case-1")
     asyncio.run(chainlit_app.start_new_case(SimpleNamespace(payload={})))
