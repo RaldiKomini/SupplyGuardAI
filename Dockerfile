@@ -17,7 +17,9 @@ COPY migrations ./migrations
 COPY scripts ./scripts
 COPY support-data ./support-data
 
-RUN useradd --system --create-home appuser && chown appuser /app
+RUN useradd --system --create-home appuser \
+    && chown appuser /app \
+    && chown -R appuser /app/.chainlit
 USER appuser
 
 ENV PATH="/app/.venv/bin:$PATH" SUPPORT_DATA_DIR=/app/support-data
