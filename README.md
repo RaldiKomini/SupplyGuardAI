@@ -4,6 +4,20 @@ SupplyGuard AI is the capstone project for the Code.Hub x PwC Agentic AI Bootcam
 
 The reference scenario concerns a 12-day delay of component MC-17 from Atlas Components. The system must identify affected products and customer commitments, evaluate feasible recovery options, enforce policy and authorization rules, and execute only an approved payload.
 
+## Demo
+
+### Compare the supplier notice and the email
+
+Atlas's formal notice gives a 12-day delay, which projects a shortfall of 5,350 units. The account manager's 16-day estimate raises the projected shortfall to 7,150 units. The approval screen cites both sources and shows the €30,378 plan for the 12-day baseline.
+
+![SupplyGuard AI compares the 12-day formal notice with the 16-day email above the approval request](docs/images/demo-delay-conflict.png)
+
+### Send the exact plan to Finance
+
+After Procurement approves, Finance reviews the same versioned request and submits its decision. The [sample incident report](docs/architecture/sample-incident-report.md#execution-outcome) shows the four actions completed in the simulated ERP.
+
+![The Finance reviewer sees the exact approval request and a decision submitted confirmation](docs/images/demo-finance-approval.png)
+
 ## Engineering principles
 
 - Business calculations use deterministic Python or SQL tools, not model arithmetic.

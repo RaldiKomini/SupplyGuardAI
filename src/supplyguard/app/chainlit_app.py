@@ -7,6 +7,7 @@ import uuid
 from collections.abc import AsyncIterator
 from contextlib import AsyncExitStack
 from datetime import UTC, datetime
+from functools import wraps
 
 import chainlit as cl
 
@@ -94,7 +95,26 @@ async def authenticate(username: str, password: str) -> cl.User | None:
     return cl.User(identifier=context.user_id, metadata={"role": context.role})
 
 
+def _serialize_case_interaction(handler):
+    """Keep overlapping callbacks from overwriting the selected case or pending approval."""
+
+    @wraps(handler)
+    async def guarded(*args, **kwargs):
+        session = cl.user_session
+        if session.get("case_action_in_progress"):
+            await cl.Message("Wait for the current case action to finish, then try again.").send()
+            return
+        session.set("case_action_in_progress", True)
+        try:
+            await handler(*args, **kwargs)
+        finally:
+            session.set("case_action_in_progress", False)
+
+    return guarded
+
+
 @cl.on_chat_start
+@_serialize_case_interaction
 async def start() -> None:
     user = cl.user_session.get("user")
     registry = get_registry()
@@ -106,17 +126,13 @@ async def start() -> None:
     cl.user_session.set("authorization", context)
     await cl.Message(
         f"Signed in as {registry.display_name(context.user_id)} ({context.role}). "
-        "Describe a supplier disruption to open a case.",
-        actions=[
-            cl.Action(name="show_approvals", payload={}, label="Show my approvals"),
-            cl.Action(name="open_latest_case", payload={}, label="Open latest case"),
-            cl.Action(name="start_new_case", payload={}, label="Start new case"),
-        ],
+        "Describe a supplier disruption to open a case."
     ).send()
     await _restore_waiting_approval(context)
 
 
 @cl.on_message
+@_serialize_case_interaction
 async def on_message(message: cl.Message) -> None:
     authorization: AuthorizationContext | None = cl.user_session.get("authorization")
     if authorization is None or _service is None:
@@ -139,16 +155,19 @@ async def on_message(message: cl.Message) -> None:
 
 
 @cl.action_callback("approve_request")
+@_serialize_case_interaction
 async def approve_request(action: cl.Action) -> None:
     await _decide(action, approved=True)
 
 
 @cl.action_callback("reject_request")
+@_serialize_case_interaction
 async def reject_request(action: cl.Action) -> None:
     await _decide(action, approved=False)
 
 
 @cl.action_callback("modify_request")
+@_serialize_case_interaction
 async def modify_request(action: cl.Action) -> None:
     """Change a quantity in the pending request. The change is revalidated by the approval
     service and becomes a new request that needs a fresh approval; nothing is approved here."""
@@ -192,6 +211,7 @@ async def modify_request(action: cl.Action) -> None:
 
 
 @cl.action_callback("start_new_case")
+@_serialize_case_interaction
 async def start_new_case(action: cl.Action) -> None:
     cl.user_session.set("case_id", None)
     cl.user_session.set("pending_approval", None)
@@ -199,6 +219,7 @@ async def start_new_case(action: cl.Action) -> None:
 
 
 @cl.action_callback("open_latest_case")
+@_serialize_case_interaction
 async def open_latest_case(action: cl.Action) -> None:
     authorization: AuthorizationContext | None = cl.user_session.get("authorization")
     if authorization is None or _service is None:
@@ -245,7 +266,22 @@ async def show_approvals(action: cl.Action) -> None:
         ).send()
 
 
+@cl.on_window_message
+async def quick_action(message: str) -> None:
+    """Dispatch the fixed chat shortcuts through the authenticated session."""
+    if not isinstance(message, str) or cl.user_session.get("authorization") is None:
+        return
+    actions = {
+        "supplyguard:show_approvals": show_approvals,
+        "supplyguard:open_latest_case": open_latest_case,
+        "supplyguard:start_new_case": start_new_case,
+    }
+    if handler := actions.get(message):
+        await handler(cl.Action(name=message.removeprefix("supplyguard:"), payload={}))
+
+
 @cl.action_callback("review_approval")
+@_serialize_case_interaction
 async def review_approval(action: cl.Action) -> None:
     authorization: AuthorizationContext | None = cl.user_session.get("authorization")
     if authorization is None or _service is None:
@@ -424,7 +460,10 @@ def _review_sections(payload: dict) -> list[str]:
 
 
 async def _ask_for_approval(event: UIEvent) -> None:
-    await _prompt_approval(ApprovalRequest.model_validate(event.payload["request"]), event.message)
+    intro = event.message
+    if highlight := event.payload.get("delay_conflict_highlight"):
+        intro = f"{highlight}\n\n{intro}"
+    await _prompt_approval(ApprovalRequest.model_validate(event.payload["request"]), intro)
 
 
 async def _prompt_approval(request: ApprovalRequest, intro: str) -> None:

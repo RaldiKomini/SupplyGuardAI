@@ -263,6 +263,7 @@ def test_owner_sees_conflicts_and_options_before_approval_buttons(session, sent)
             "recommendation_reason": "No feasible option",
         },
     }
+    context["delay_conflict_highlight"] = "> **Supplier sources disagree**"
     approval = event.model_copy(update={"payload": {**event.payload, **context}})
 
     asyncio.run(chainlit_app._show(_events(approval)))
@@ -272,6 +273,7 @@ def test_owner_sees_conflicts_and_options_before_approval_buttons(session, sent)
         "Formal notice says 12 days." in preview.content
         and "## Options compared" in preview.content
     )
+    assert buttons.content.startswith("> **Supplier sources disagree**")
     assert buttons.actions[0].name == "approve_request"
 
 
@@ -474,6 +476,58 @@ def test_open_latest_case_can_show_completed_report(session, monkeypatch, sent) 
     assert session.get("case_id") == done.case_id
     assert session.get("pending_approval") is None
     assert sent[-1].content == "Persisted incident report"
+
+
+@pytest.mark.parametrize("name", ["show_approvals", "open_latest_case", "start_new_case"])
+def test_persistent_shortcut_routes_to_the_existing_action(name, session, monkeypatch) -> None:
+    calls = []
+
+    async def action(payload):
+        calls.append(payload.name)
+
+    monkeypatch.setattr(chainlit_app, name, action)
+    asyncio.run(chainlit_app.quick_action(f"supplyguard:{name}"))
+    asyncio.run(chainlit_app.quick_action("supplyguard:approve_request"))
+    session.set("authorization", None)
+    asyncio.run(chainlit_app.quick_action(f"supplyguard:{name}"))
+
+    assert calls == [name]
+
+
+def test_shortcut_cannot_switch_cases_while_a_case_is_responding(
+    session, monkeypatch, sent
+) -> None:
+    session.set("case_id", "case-1")
+    started = asyncio.Event()
+    finish = asyncio.Event()
+
+    class SlowService(_FakeService):
+        async def send_message(self, case_id, message, authorization):
+            async def incoming():
+                started.set()
+                await finish.wait()
+                yield _approval_event()
+
+            return incoming()
+
+    monkeypatch.setattr(chainlit_app, "_service", SlowService())
+
+    async def exercise():
+        running_case = asyncio.create_task(
+            chainlit_app.on_message(SimpleNamespace(content="Show the impact."))
+        )
+        await started.wait()
+        try:
+            await chainlit_app.quick_action("supplyguard:start_new_case")
+            assert session.get("case_id") == "case-1"
+            assert "current case action" in sent[-1].content
+        finally:
+            finish.set()
+            await running_case
+        await chainlit_app.quick_action("supplyguard:start_new_case")
+        assert session.get("case_id") is None
+
+    asyncio.run(exercise())
 
 
 def test_start_new_case_clears_the_restored_case(session, sent) -> None:

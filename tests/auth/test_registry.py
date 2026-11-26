@@ -98,6 +98,13 @@ def test_compose_passes_every_account_password_to_the_app() -> None:
         assert f"{user.password_env}: ${{{user.password_env}:-}}" in compose
 
 
+def test_email_sign_in_uses_the_existing_account(registry: AccessRegistry) -> None:
+    context = registry.authenticate("  Maria.Keller@SupplyGuard.Example  ", "pw-u-pm-01")
+
+    assert context == registry.authorization_for("u-pm-01")
+    assert registry.authenticate("maria.keller@supplyguard.example", "pw-u-fc-01") is None
+
+
 def test_wrong_password_is_rejected(registry: AccessRegistry) -> None:
     assert registry.authenticate("u-fc-01", "pw-u-an-01") is None
 

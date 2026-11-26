@@ -3,6 +3,7 @@
 from supplyguard.reporting.report import (
     build_incident_report,
     completed_action_count,
+    delay_conflict_highlight,
     evidence_review,
     operational_review,
     options_review,
@@ -12,6 +13,7 @@ from supplyguard.reporting.report import (
 __all__ = [
     "build_incident_report",
     "completed_action_count",
+    "delay_conflict_highlight",
     "evidence_review",
     "operational_review",
     "options_review",
